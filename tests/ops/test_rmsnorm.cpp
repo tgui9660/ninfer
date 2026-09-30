@@ -2,6 +2,7 @@
 #include "ops/norm_test_common.h"
 #include "core/device.h"
 #include "core/decode_graph.h"
+#include "core/tuning_profile.h"
 
 #include <cmath>
 #include <cstdint>
@@ -74,8 +75,10 @@ int run_case(const char* label, const Shape& shape, bool unit_offset, std::uint3
     DeviceContext device;
     DecodeGraphDefinition definition;
     DecodeGraphExecutable graph;
+    device.apply_tuning_resolution(GpuTuningProfile::Rtx5090, kRtx5090SmCount, false);
+    const DeviceExecutionView execution = device.execution_view();
     const auto launch = [&] {
-        ops::rmsnorm(input_tensor, weight_tensor, kEps, unit_offset, output_tensor, device.stream);
+        ops::rmsnorm(input_tensor, weight_tensor, kEps, unit_offset, output_tensor, execution);
     };
     int failures = 0;
     for (int phase = 0; phase < (replay ? 2 : 1); ++phase) {

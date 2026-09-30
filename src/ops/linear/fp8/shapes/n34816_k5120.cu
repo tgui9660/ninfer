@@ -58,7 +58,18 @@ void launch_a8(const Tensor& x, const Weight& weight, Tensor& out, Fp8A8Workspac
 bool uses_a8(std::int32_t min_tokens, std::int32_t max_tokens) {
     return min_tokens == 1 || max_tokens >= 5;
 }
+
+constexpr Fp8RouteEntry kRoutes[] = {
+    {"sliced_32_4_1", fp8_linear_a16_sliced_k<Geometry, Fp8SlicedInstance<32, 4, 1>>},
+    {"mma_32_64_k128_s1a3",
+     fp8_linear_a16_mma<Geometry, Fp8A16MmaSchedule<32, 64, 128, 16, 16, 1, 3>>},
+    {"mma_64_96_k128_s1a2",
+     fp8_linear_a16_mma<Geometry, Fp8A16MmaSchedule<64, 96, 128, 64, 16, 1, 2>>},
+    {"mma_64_128_k64_s2a2",
+     fp8_linear_a16_mma<Geometry, Fp8A16MmaSchedule<64, 128, 64, 64, 16, 2, 2>>},
+    {nullptr, nullptr},
+};
 } // namespace
 
-const Fp8LinearShape kFp8N34816K5120{34816, 5120, launch_a16, launch_a8, uses_a8};
+const Fp8LinearShape kFp8N34816K5120{34816, 5120, launch_a16, launch_a8, uses_a8, kRoutes};
 } // namespace ninfer::ops::detail

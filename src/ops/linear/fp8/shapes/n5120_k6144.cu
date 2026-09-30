@@ -19,17 +19,17 @@ void launch_a16(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t
         return fp8_linear_a16_sliced_k<Geometry, Fp8SlicedInstance<8, 8, 2>>(x, weight, out,
                                                                              stream);
     if (tokens <= 16)
-        return fp8_linear_a16_sliced_k<Geometry, Fp8SlicedInstance<16, 8, 2>>(x, weight, out,
-                                                                              stream);
-    if (tokens <= 32)
         return fp8_linear_a16_sliced_k<Geometry, Fp8SlicedInstance<16, 4, 2>>(x, weight, out,
                                                                               stream);
-    if (tokens <= 64)
+    if (tokens <= 32)
+        return fp8_linear_a16_sliced_k<Geometry, Fp8SlicedInstance<16, 8, 2>>(x, weight, out,
+                                                                              stream);
+    if (tokens <= 36)
+        return fp8_linear_a16_sliced_k<Geometry, Fp8SlicedInstance<16, 4, 2>>(x, weight, out,
+                                                                              stream);
+    if (tokens <= 96)
         return fp8_linear_a16_sliced_k<Geometry, Fp8SlicedInstance<32, 4, 1>>(x, weight, out,
                                                                               stream);
-    if (tokens <= 128)
-        return fp8_linear_a16_mma<Geometry, Fp8A16MmaSchedule<64, 64, 128, 32, 16, 2, 2>>(
-            x, weight, out, stream);
     fp8_linear_a16_mma<Geometry, Fp8A16MmaSchedule<64, 128, 64, 64, 16, 2, 2>>(x, weight, out,
                                                                                stream);
 }
@@ -44,7 +44,19 @@ void launch_a8(const Tensor& x, const Weight& weight, Tensor& out, Fp8A8Workspac
 }
 
 bool uses_a8(std::int32_t, std::int32_t max_tokens) { return max_tokens >= 25; }
+
+constexpr Fp8RouteEntry kRoutes[] = {
+    {"sliced_8_8_2", fp8_linear_a16_sliced_k<Geometry, Fp8SlicedInstance<8, 8, 2>>},
+    {"sliced_16_8_2", fp8_linear_a16_sliced_k<Geometry, Fp8SlicedInstance<16, 8, 2>>},
+    {"sliced_16_4_2", fp8_linear_a16_sliced_k<Geometry, Fp8SlicedInstance<16, 4, 2>>},
+    {"sliced_32_4_1", fp8_linear_a16_sliced_k<Geometry, Fp8SlicedInstance<32, 4, 1>>},
+    {"mma_64_64_k128_s2a2",
+     fp8_linear_a16_mma<Geometry, Fp8A16MmaSchedule<64, 64, 128, 32, 16, 2, 2>>},
+    {"mma_64_128_k64_s2a2",
+     fp8_linear_a16_mma<Geometry, Fp8A16MmaSchedule<64, 128, 64, 64, 16, 2, 2>>},
+    {nullptr, nullptr},
+};
 } // namespace
 
-const Fp8LinearShape kFp8N5120K6144{5120, 6144, launch_a16, launch_a8, uses_a8};
+const Fp8LinearShape kFp8N5120K6144{5120, 6144, launch_a16, launch_a8, uses_a8, kRoutes};
 } // namespace ninfer::ops::detail

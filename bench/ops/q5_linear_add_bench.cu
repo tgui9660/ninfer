@@ -33,10 +33,12 @@ constexpr std::int32_t kRows           = 5120;
 constexpr std::size_t kDefaultFlushMiB = 256;
 constexpr int kDefaultWarmup           = 5;
 constexpr int kDefaultRepeat           = 50;
-constexpr double kDramSpecGBs          = 1792.0;
-// NVIDIA's GB202 table reports dense/sparse pairs at boost clock; keep the accumulator precision
-// explicit. SIMT and split-K routes report no Tensor Core ratio.
-constexpr double kBf16Fp32AccumulateTFLOPs = 209.5;
+constexpr double kRtxPro5000DramSpecGBs          = 1344.0;
+// Dense BF16 TC peak is 512 FLOP/SM/cycle at the 3090 MHz boost clock on 110 SMs (the 300 W cap
+// sustains ~2220 MHz, ~125 TFLOP/s); ratios are against the boost table, as on the historical
+// RTX 5090 (209.5). Keep the accumulator precision explicit. SIMT and split-K routes report no
+// Tensor Core ratio.
+constexpr double kRtxPro5000Bf16Fp32AccumulateTFLOPs = 174.4;
 
 struct Options {
     std::int32_t hidden = 0;
@@ -279,7 +281,7 @@ int main(int argc, char** argv) {
                              row.timing.median_us, row.timing.min_us, row.timing.p95_us,
                              static_cast<unsigned long long>(row.weight_bytes),
                              static_cast<unsigned long long>(row.logical_bytes),
-                             row.projection_flops, gbs, gbs / kDramSpecGBs * 100.0,
+                             row.projection_flops, gbs, gbs / kRtxPro5000DramSpecGBs * 100.0,
                              row.projection_flops / seconds / 1.0e12, row.workspace_sweep_bytes,
                              row.workspace_exact_bytes, row.workspace_used_bytes);
             }

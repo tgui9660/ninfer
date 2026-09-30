@@ -29,8 +29,8 @@ constexpr std::int32_t kParentRows  = 6144;
 constexpr std::int32_t kFirstRow    = 4096;
 constexpr std::int32_t kSecondRow   = 5120;
 constexpr std::int32_t kRows        = 1024;
-constexpr double kRtx5090ReadGBs    = 1674.5;
-constexpr double kRtx5090Bf16Tflops = 209.5;
+constexpr double kRtxPro5000ReadGBs    = 1237.4;
+constexpr double kRtxPro5000Bf16Tflops = 174.4;
 
 enum class Execution : std::uint8_t { Eager, Graph };
 
@@ -215,7 +215,7 @@ int main(int argc, char** argv) {
                     "bf16_tc_reference=%.1f_TFLOP/s\n",
                     properties.name, options.k,
                     options.execution == Execution::Graph ? "graph_replay" : "eager",
-                    kRtx5090ReadGBs, kRtx5090Bf16Tflops);
+                    kRtxPro5000ReadGBs, kRtxPro5000Bf16Tflops);
 
         double t1_median = std::numeric_limits<double>::quiet_NaN();
         for (const std::int32_t tokens : options.tokens) {
@@ -248,11 +248,11 @@ int main(int argc, char** argv) {
             std::printf("T=%-3d median=%8.3f us min=%8.3f us p95=%8.3f us "
                         "effective=%7.1f GB/s READ=%5.1f%% logical=%6.2f TFLOP/s ",
                         tokens, timing.median_us, timing.min_us, timing.p95_us, gbs,
-                        100.0 * gbs / kRtx5090ReadGBs, tflops);
+                        100.0 * gbs / kRtxPro5000ReadGBs, tflops);
             if (tokens == 1) {
                 std::printf("TC=n/a ");
             } else {
-                std::printf("TC=%5.1f%% ", 100.0 * tflops / kRtx5090Bf16Tflops);
+                std::printf("TC=%5.1f%% ", 100.0 * tflops / kRtxPro5000Bf16Tflops);
             }
             if (std::isnan(extrapolation)) {
                 std::printf("T1_linear=n/a\n");

@@ -176,6 +176,19 @@ int test_cli_contract() {
                 {"ninfer_bench", "--weights", "model.ninfer", "--kv-dtype", "fp4"});
         },
         "unsupported KV storage");
+    const qb::BenchOptions tuned =
+        parse_for_test({"ninfer_bench", "--weights", "model.ninfer", "--tuning-profile",
+                        "rtx-pro-5000"});
+    failures += expect(tuned.tuning_profile == ninfer::GpuTuningProfile::RtxPro5000,
+                       "RTX PRO 5000 tuning profile");
+    failures += expect(qb::usage_text("ninfer_bench").find("--tuning-profile") != std::string::npos,
+                       "benchmark help omits --tuning-profile");
+    failures += expect_throws<std::invalid_argument>(
+        [] {
+            (void)parse_for_test(
+                {"ninfer_bench", "--weights", "model.ninfer", "--tuning-profile", "banana"});
+        },
+        "unknown tuning profile");
     return failures;
 }
 

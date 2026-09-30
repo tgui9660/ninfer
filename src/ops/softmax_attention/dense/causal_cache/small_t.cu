@@ -45,7 +45,7 @@ std::int32_t causal_small_t_split_upper_bound(std::int32_t window) {
 
 template <typename Geometry>
 std::int32_t causal_small_t_split_count(std::int32_t window, std::int32_t tokens,
-                                        KvCacheStorage storage) {
+                                        KvCacheStorage storage, std::int32_t tuning_sm_count) {
     if constexpr (Geometry::SmallTSplitScale == 1) {
         if (storage == KvCacheStorage::Fp8E4M3Row256 && tokens == 1 && window > 8198) {
             return Geometry::SmallTMaximumSplits;
@@ -62,11 +62,14 @@ std::int32_t causal_small_t_split_count(std::int32_t window, std::int32_t tokens
         return div_up(window, kKeysPerSplit);
     }
     // Bc=64 is one CTA/SM on these model shapes. Keep the 8K grid at or below
-    // one 170-SM wave after accounting for the geometry's KV-head count.
+    // one wave of the profile's SM count after accounting for the geometry's KV-head count.
     if (storage == KvCacheStorage::Int8Group64 && tokens >= 6 && window > 5000 && window <= 8198) {
         const std::int32_t splits   = div_up(window, 192 / Geometry::SmallTSplitScale);
         constexpr std::int32_t kMin = 4 * Geometry::SmallTSplitScale;
-        constexpr std::int32_t kMax = 42 * Geometry::SmallTSplitScale;
+        // Measured on the 110-SM part (2026-09-29): 42 splits put the 4-kv-head B=1 grid at 168
+        // CTAs (1.53 waves); 27 splits (108 CTAs, one wave) wins -5..-28%. The 170-SM part keeps
+        // 42. tuning_sm_count is validated positive by causal_attention_split_capacity.
+        const std::int32_t kMax     = (tuning_sm_count < 170 ? 27 : 42) * Geometry::SmallTSplitScale;
         const std::int32_t clamped  = (splits > kMin) ? splits : kMin;
         return (clamped < kMax) ? clamped : kMax;
     }
@@ -75,12 +78,14 @@ std::int32_t causal_small_t_split_count(std::int32_t window, std::int32_t tokens
 
 template <typename Geometry>
 std::int32_t causal_small_t_launch_capacity(CausalAttentionExecutionEnvelope envelope,
-                                            std::int32_t tokens, KvCacheStorage storage) {
+                                            std::int32_t tokens, KvCacheStorage storage,
+                                            std::int32_t tuning_sm_count) {
     std::int32_t capacity = 0;
     const auto include    = [&](std::uint32_t window) {
         if (window < envelope.min_visible_keys || window > envelope.max_visible_keys) { return; }
         const auto splits = causal_small_t_split_count<Geometry>(static_cast<std::int32_t>(window),
-                                                                    tokens, storage);
+                                                                     tokens, storage,
+                                                                     tuning_sm_count);
         capacity          = capacity > splits ? capacity : splits;
     };
     include(envelope.min_visible_keys);
@@ -216,27 +221,40 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
 std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t tokens,
                                              KvCacheStorage cache_storage,
                                              CausalAttentionExecutionEnvelope envelope,
-                                             std::int32_t batch_size) {
+                                             std::int32_t batch_size, std::int32_t tuning_sm_count) {
     if (tokens < 1 || tokens > (q_heads == 24 ? 8 : 6) || envelope.min_visible_keys == 0 ||
-        envelope.min_visible_keys > envelope.max_visible_keys) {
+        envelope.min_visible_keys > envelope.max_visible_keys || tuning_sm_count <= 0) {
         throw std::invalid_argument("causal_softmax_attention split capacity: invalid profile");
     }
     (void)paged_kv_storage_layout(cache_storage, kCausalHeadDim);
     if (q_heads == CausalD256H24Kv4::QHeads) {
-        const int capacity =
-            causal_small_t_launch_capacity<CausalD256H24Kv4>(envelope, tokens, cache_storage);
+        const int capacity = causal_small_t_launch_capacity<CausalD256H24Kv4>(
+            envelope, tokens, cache_storage, tuning_sm_count);
         if (batch_size > 1) {
-            // Keep complete grids within one or two 170-SM waves. Rounding from 160 CTAs
-            // leaves room for the indivisible 4*B group, including B=3/5/6/7.
-            const bool narrow = tokens <= 5;
-            int target_ctas   = 160;
+            // Keep complete grids within one or two waves of the profile's wave-sizing SM count.
+            // Rounding the 170-SM 160-CTA target down to a multiple of four leaves room for the
+            // indivisible 4*B group, including B=3/5/6/7.
+            const bool narrow   = tokens <= 5;
+            const int wave_ctas = (tuning_sm_count * 160 / 170) & ~3;
+            int target_ctas     = wave_ctas;
             if (cache_storage == KvCacheStorage::BFloat16)
-                target_ctas =
-                    narrow || batch_size >= 5 || envelope.max_visible_keys > 4096 ? 320 : 160;
+                target_ctas = narrow || batch_size >= 5 || envelope.max_visible_keys > 4096
+                                  ? 2 * wave_ctas
+                                  : wave_ctas;
             else if (cache_storage == KvCacheStorage::Int8Group64)
-                target_ctas = narrow || envelope.max_visible_keys > 4096 ? 320 : 160;
+                target_ctas = narrow || envelope.max_visible_keys > 4096 ? 2 * wave_ctas
+                                                                         : wave_ctas;
             else if (cache_storage == KvCacheStorage::Nvfp4Group16)
-                target_ctas = narrow ? 320 : 160;
+                target_ctas = narrow ? 2 * wave_ctas : wave_ctas;
+            else if (cache_storage == KvCacheStorage::Fp8KeyNvfp4Value && tokens == 1 &&
+                     tuning_sm_count < 170) {
+                // Measured on the 110-SM part (2026-09-29): single-token multi-batch k8v4 grids
+                // fill better one wave quantum wider (120/128 CTAs at B=2/4, -4..-7% vs the
+                // 160 target); every multi-token grid, the 170-SM part, and the fp8e4m3row256
+                // storage (which measured +6..+13% with the wider target) keep the 160 target.
+                // Evidence: profiles/bench/phase3-causal-wave-*.txt.
+                target_ctas = (tuning_sm_count * 180 / 170) & ~3;
+            }
             const int grid_limit = div_up(target_ctas, 4 * batch_size);
             // A split stages at most 64 physical-page IDs. Leave two 64-key pages for
             // key-tile rounding and page alignment at the 262144-key resource limit.
@@ -246,7 +264,8 @@ std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t 
         return capacity;
     }
     if (q_heads == CausalD256H16Kv2::QHeads) {
-        return causal_small_t_launch_capacity<CausalD256H16Kv2>(envelope, tokens, cache_storage);
+        return causal_small_t_launch_capacity<CausalD256H16Kv2>(
+            envelope, tokens, cache_storage, tuning_sm_count);
     }
     throw std::invalid_argument(
         "causal_softmax_attention split capacity: unsupported head geometry");
@@ -258,11 +277,12 @@ void causal_attention_small_t_launch_for(const Tensor& q, CacheInput input, cons
                                          const CausalSmallTInvocation& invocation,
                                          CausalAttentionExecutionEnvelope envelope,
                                          Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l,
-                                         Tensor& out, cudaStream_t stream) {
+                                         Tensor& out, std::int32_t tuning_sm_count, cudaStream_t stream) {
     const auto logical_capacity      = static_cast<std::int32_t>(envelope.max_visible_keys);
     const auto implementation_window = static_cast<std::int32_t>(envelope.max_visible_keys);
     const auto splits                = causal_attention_split_capacity(
-        Geometry::QHeads, invocation.width, cache.storage, envelope, invocation.batch_size);
+        Geometry::QHeads, invocation.width, cache.storage, envelope, invocation.batch_size,
+        tuning_sm_count);
 
     // BF16 keeps its row-tile warp count; INT8 selects its producer/consumer
     // geometry inside launch_tc_partial_i8.
@@ -372,23 +392,23 @@ void causal_attention_small_t_launch(
     const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& pos,
     const Tensor& valid_columns, const Tensor& table_rows, float scale, PagedKVBatchLayerView cache,
     CausalAttentionExecutionEnvelope envelope, std::int32_t column_begin, std::int32_t width,
-    Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, cudaStream_t stream) {
+    Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, std::int32_t tuning_sm_count, cudaStream_t stream) {
     if (cache.storage == KvCacheStorage::Fp8KeyNvfp4Value) {
         causal_attention_small_t_k8v4_launch(q, k, v, pos, valid_columns, table_rows, scale, cache,
                                              envelope, column_begin, width, partial_acc, partial_m,
-                                             partial_l, out, stream);
+                                             partial_l, out, tuning_sm_count, stream);
         return;
     }
     if (cache.storage == KvCacheStorage::Fp8E4M3Row256) {
         causal_attention_small_t_fp8_launch(q, k, v, pos, valid_columns, table_rows, scale, cache,
                                             envelope, column_begin, width, partial_acc, partial_m,
-                                            partial_l, out, stream);
+                                            partial_l, out, tuning_sm_count, stream);
         return;
     }
     if (cache.storage == KvCacheStorage::Nvfp4Group16) {
         causal_attention_small_t_nvfp4_launch(q, k, v, pos, valid_columns, table_rows, scale, cache,
                                               envelope, column_begin, width, partial_acc, partial_m,
-                                              partial_l, out, stream);
+                                              partial_l, out, tuning_sm_count, stream);
         return;
     }
     const CausalAppendInput input{static_cast<const __nv_bfloat16*>(k.data),
@@ -404,32 +424,32 @@ void causal_attention_small_t_launch(
     if (q.ne[1] == CausalD256H24Kv4::QHeads) {
         causal_attention_small_t_launch_for<CausalD256H24Kv4>(q, input, pos, scale, cache,
                                                               invocation, envelope, partial_acc,
-                                                              partial_m, partial_l, out, stream);
+                                                              partial_m, partial_l, out, tuning_sm_count, stream);
         return;
     }
     causal_attention_small_t_launch_for<CausalD256H16Kv2>(q, input, pos, scale, cache, invocation,
                                                           envelope, partial_acc, partial_m,
-                                                          partial_l, out, stream);
+                                                          partial_l, out, tuning_sm_count, stream);
 }
 
 void causal_attention_cached_small_t_launch(const Tensor& q, const Tensor& pos, float scale,
                                             const PagedKVLayerView& cache,
                                             CausalAttentionExecutionEnvelope envelope,
                                             Tensor& partial_acc, Tensor& partial_m,
-                                            Tensor& partial_l, Tensor& out, cudaStream_t stream) {
+                                            Tensor& partial_l, Tensor& out, std::int32_t tuning_sm_count, cudaStream_t stream) {
     if (cache.storage == KvCacheStorage::Fp8KeyNvfp4Value) {
         causal_attention_cached_small_t_k8v4_launch(q, pos, scale, cache, envelope, partial_acc,
-                                                    partial_m, partial_l, out, stream);
+                                                    partial_m, partial_l, out, tuning_sm_count, stream);
         return;
     }
     if (cache.storage == KvCacheStorage::Fp8E4M3Row256) {
         causal_attention_cached_small_t_fp8_launch(q, pos, scale, cache, envelope, partial_acc,
-                                                   partial_m, partial_l, out, stream);
+                                                   partial_m, partial_l, out, tuning_sm_count, stream);
         return;
     }
     if (cache.storage == KvCacheStorage::Nvfp4Group16) {
         causal_attention_cached_small_t_nvfp4_launch(q, pos, scale, cache, envelope, partial_acc,
-                                                     partial_m, partial_l, out, stream);
+                                                     partial_m, partial_l, out, tuning_sm_count, stream);
         return;
     }
     const CausalCachedInput input{};
@@ -445,12 +465,12 @@ void causal_attention_cached_small_t_launch(const Tensor& q, const Tensor& pos, 
     if (q.ne[1] == CausalD256H24Kv4::QHeads) {
         causal_attention_small_t_launch_for<CausalD256H24Kv4>(q, input, pos, scale, batch_cache,
                                                               invocation, envelope, partial_acc,
-                                                              partial_m, partial_l, out, stream);
+                                                              partial_m, partial_l, out, tuning_sm_count, stream);
         return;
     }
     causal_attention_small_t_launch_for<CausalD256H16Kv2>(q, input, pos, scale, batch_cache,
                                                           invocation, envelope, partial_acc,
-                                                          partial_m, partial_l, out, stream);
+                                                          partial_m, partial_l, out, tuning_sm_count, stream);
 }
 
 } // namespace ninfer::ops::detail

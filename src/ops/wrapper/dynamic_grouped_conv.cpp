@@ -157,7 +157,7 @@ void rmsnorm_dynamic_grouped_conv_prepare(const Tensor& residual, const Tensor& 
                                           float eps, const Tensor& base_kernel,
                                           const Weight& kernel_projection_weight, Tensor& prepared,
                                           Tensor& finish_delta, WorkspaceArena& workspace,
-                                          cudaStream_t stream) {
+                                          DeviceExecutionView execution) {
     const std::int32_t batch_size = residual.ne[2];
     const std::int32_t width      = residual.ne[1];
     if (width < 2 || width > 16) {
@@ -182,7 +182,7 @@ void rmsnorm_dynamic_grouped_conv_prepare(const Tensor& residual, const Tensor& 
 
     detail::bf16_dynamic_grouped_conv_prepare_dispatch(residual, norm_weight, eps, base_kernel,
                                                        kernel_projection_weight, prepared,
-                                                       finish_delta, workspace, stream);
+                                                       finish_delta, workspace, execution);
 }
 
 std::size_t linear_dynamic_grouped_conv_add_workspace_capacity_bytes(std::int32_t input_rows,

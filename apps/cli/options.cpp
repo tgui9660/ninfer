@@ -1,3 +1,4 @@
+#include "core/tuning_profile.h"
 #include "options.h"
 #include "product/speculative_options.h"
 
@@ -83,7 +84,7 @@ std::string usage_text(const char* argv0) {
     return std::string("usage: ") + argv0 +
            " <model.ninfer> (--prompt <text>|--messages <messages.json>)\n"
            "       [--max-context N] [--kv-capacity N|auto] [--prefill-chunk N] [--max-new N]\n"
-           "       [--device N]\n"
+           "       [--device N] [--tuning-profile auto|rtx-5090|rtx-pro-5000]\n"
            "       [--kv-dtype bf16|int8|fp8|nvfp4|k8v4] [--spec mtp|dflash|dflash2 --draft-tokens "
            "N]\n"
            "       [--lm-head-draft]\n"
@@ -105,6 +106,8 @@ std::string usage_text(const char* argv0) {
            "--kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom.\n"
+           "--tuning-profile selects the launch-policy tuning set; auto resolves it from the "
+           "detected GPU.\n"
            "Sampling defaults come from the loaded model and thinking mode; flags override "
            "individual fields.\n";
 }
@@ -143,6 +146,13 @@ Options parse_options(int argc, char** argv) {
             options.prefill_chunk = parse_u32(value(arg), "prefill-chunk");
         } else if (arg == "--device") {
             options.device = parse_device(value(arg));
+        } else if (arg == "--tuning-profile") {
+            const auto parsed = parse_tuning_profile(value(arg));
+            if (!parsed) {
+                throw std::invalid_argument(
+                    "--tuning-profile must be auto, rtx-5090, or rtx-pro-5000");
+            }
+            options.tuning_profile = *parsed;
         } else if (arg == "--kv-dtype") {
             options.kv_cache = parse_kv_cache(value(arg));
         } else if (arg == "--spec") {

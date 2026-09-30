@@ -7,12 +7,14 @@
 //   ./ninfer_rope_bench --vision --patches 8,256,4096,49152,65536
 // Add --control for the same-grid, same-payload fixed-resource control.
 #include "core/device.h"
+#include "core/tuning_profile.h"
 #include "ninfer/ops/rope.h"
 #include "ninfer_bench_common.h"
 #include "ops/kernel/rope.cuh"
 
 #include <cuda_bf16.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -31,12 +33,56 @@ constexpr int kDflashHeadDim          = 128;
 constexpr int kDflashRotaryDim        = 128;
 constexpr int kDflashQHeads           = 32;
 constexpr int kDflashKHeads           = 8;
-constexpr int kTextChunkMaxTokens     = 1024;
-constexpr int kLargeBlockWaveCapacity = 1020;
-constexpr float kTextTheta            = 1.0e7F;
+constexpr int kTextChunkMaxTokens      = 1024;
+constexpr int kLargeBlockCtasPerSm     = 6;
+constexpr float kTextTheta             = 1.0e7F;
 constexpr int kVisionHeadDim          = 72;
 constexpr int kVisionHeads            = 16;
 constexpr float kVisionTheta          = 10'000.0F;
+
+// The production RoPE dispatch is profile-gated; resolve the wave-sizing SM count once so the
+// benchmark exercises the same policy the engine would on this device. main() sets the requested
+// profile (--tuning-profile) before any measurement; the static caches read it on first use.
+GpuTuningProfile requested_tuning_profile = GpuTuningProfile::Auto;
+
+struct TuningCache {
+    GpuTuningProfile profile;
+    std::int32_t sm_count;
+    TuningCache() {
+        int compute_capability   = 0;
+        int multiprocessor_count = 0;
+        cudaDeviceProp prop{};
+        if (cudaGetDeviceProperties(&prop, 0) == cudaSuccess) {
+            compute_capability   = prop.major * 10 + prop.minor;
+            multiprocessor_count = prop.multiProcessorCount;
+        }
+        const auto tuning = resolve_tuning_profile(requested_tuning_profile, compute_capability,
+                                                   multiprocessor_count);
+        profile           = tuning.concrete;
+        sm_count          = tuning.tuning_sm_count;
+    }
+};
+
+DeviceExecutionView bench_execution(cudaStream_t stream) {
+    static const TuningCache tuning;
+    return {.stream          = stream,
+            .tuning_profile  = tuning.profile,
+            .tuning_sm_count = tuning.sm_count};
+}
+
+int large_block_wave_capacity() {
+    static const TuningCache tuning;
+    return kLargeBlockCtasPerSm * tuning.sm_count;
+}
+
+// Mirrors the launcher's profile-gated full-chunk end (src/ops/launcher/rope.cu): on sub-170-SM
+// profiles the 192-thread block's one-wave capacity is eight times the SM count, beyond which the
+// 128-thread block is used.
+int full_chunk_end_tokens() {
+    static const TuningCache tuning;
+    const std::int32_t sm   = tuning.sm_count;
+    return (sm > 0 && sm < 170) ? std::min(kTextChunkMaxTokens, 8 * sm) : kTextChunkMaxTokens;
+}
 
 std::vector<int> parse_csv(const char* value) {
     std::vector<int> values;
@@ -214,9 +260,9 @@ int production_text_block(int tokens) {
     int block = 128;
     if (tokens <= 6) {
         block = (QHeads + KHeads) * 32;
-    } else if (tokens <= kLargeBlockWaveCapacity) {
+    } else if (tokens <= large_block_wave_capacity()) {
         block = 256;
-    } else if (tokens <= kTextChunkMaxTokens) {
+    } else if (tokens <= full_chunk_end_tokens()) {
         block = 192;
     }
     const int head_warps = (QHeads + KHeads) * 32;
@@ -377,7 +423,7 @@ void run_text_single(int tokens, int axes, bool control, const char* geometry, c
             if (control) {
                 launch_text_control<Heads, 0>(tpos, tx, tx, stream);
             } else {
-                ops::rope(tpos, kTextRotaryDim, kTextTheta, tx, stream);
+                ops::rope(tpos, kTextRotaryDim, kTextTheta, tx, bench_execution(stream));
             }
         },
         bytes);
@@ -418,7 +464,7 @@ void run_text(int tokens, int axes, bool control, int candidate_block, const cha
             } else if (candidate_block != 0) {
                 launch_text_candidate<QHeads, KHeads>(tpos, tq, tk, candidate_block, stream);
             } else {
-                ops::rope(tpos, kTextRotaryDim, kTextTheta, tq, tk, stream);
+                ops::rope(tpos, kTextRotaryDim, kTextTheta, tq, tk, bench_execution(stream));
             }
         },
         bytes);
@@ -456,7 +502,7 @@ void run_dflash(int tokens, bool control, int candidate_block, int candidate_hea
         } else if (candidate_block != 0) {
             launch_dflash_candidate(tpos, tq, tk, block, stream);
         } else {
-            ops::rope(tpos, kDflashRotaryDim, kTextTheta, tq, tk, stream);
+            ops::rope(tpos, kDflashRotaryDim, kTextTheta, tq, tk, bench_execution(stream));
         }
     };
     if (profile) {
@@ -503,7 +549,7 @@ void run_dflash_single_k(int tokens, bool control) {
                         tx.nb[2] / static_cast<std::int64_t>(sizeof(__nv_bfloat16)), 0);
                 CUDA_CHECK(cudaGetLastError());
             } else {
-                ops::rope(tpos, kDflashRotaryDim, kTextTheta, tx, stream);
+                ops::rope(tpos, kDflashRotaryDim, kTextTheta, tx, bench_execution(stream));
             }
         },
         bytes);
@@ -530,7 +576,7 @@ void run_vision(int patches, bool control) {
             if (control) {
                 launch_vision_control(tpos, tq, tk, stream);
             } else {
-                ops::rope(tpos, kVisionHeadDim, kVisionTheta, tq, tk, stream);
+                ops::rope(tpos, kVisionHeadDim, kVisionTheta, tq, tk, bench_execution(stream));
             }
         },
         bytes);
@@ -554,6 +600,7 @@ struct Options {
     bool profile        = false;
     int candidate_block = 0;
     int candidate_heads = 0;
+    GpuTuningProfile tuning_profile = GpuTuningProfile::Auto;
     std::vector<int> tokens{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 128, 1024};
     std::vector<int> patches{8, 256, 4096, 49152, 65536};
 };
@@ -616,6 +663,12 @@ Options parse_options(int argc, char** argv) {
             options.patches = parse_csv(value());
         } else if (!std::strcmp(arg, "--profile")) {
             options.profile = true;
+        } else if (!std::strcmp(arg, "--tuning-profile")) {
+            const auto parsed = parse_tuning_profile(value());
+            if (!parsed) {
+                throw std::invalid_argument("--tuning-profile must be auto, rtx-5090, or rtx-pro-5000");
+            }
+            options.tuning_profile = *parsed;
         } else {
             throw std::invalid_argument(std::string("unknown option: ") + arg);
         }
@@ -652,6 +705,10 @@ int main(int argc, char** argv) {
     }
     try {
         const Options options = parse_options(argc, argv);
+        requested_tuning_profile = options.tuning_profile;
+        const TuningCache tuning;
+        std::printf("tuning_profile=%s wave_sm_count=%d\n", tuning_profile_name(tuning.profile),
+                    tuning.sm_count);
         if (options.text) {
             if (options.geometryDflash && options.axes1 && options.pair) {
                 for (int tokens : options.tokens) {

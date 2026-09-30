@@ -114,7 +114,8 @@ DeviceContext::~DeviceContext() {
 
 DeviceContext::DeviceContext(DeviceContext&& other) noexcept
     : device(other.device), stream(other.stream), transfer_stream(other.transfer_stream),
-      props(other.props) {
+      props(other.props), tuning_profile_(other.tuning_profile_),
+      tuning_sm_count_(other.tuning_sm_count_), tuning_foreign_(other.tuning_foreign_) {
     other.stream          = nullptr;
     other.transfer_stream = nullptr;
 }
@@ -126,10 +127,13 @@ DeviceContext& DeviceContext::operator=(DeviceContext&& other) noexcept {
     destroy_stream(transfer_stream);
     destroy_stream(stream);
 
-    device          = other.device;
-    props           = other.props;
-    stream          = other.stream;
-    transfer_stream = other.transfer_stream;
+    device           = other.device;
+    props            = other.props;
+    stream           = other.stream;
+    transfer_stream  = other.transfer_stream;
+    tuning_profile_  = other.tuning_profile_;
+    tuning_sm_count_ = other.tuning_sm_count_;
+    tuning_foreign_  = other.tuning_foreign_;
 
     other.stream          = nullptr;
     other.transfer_stream = nullptr;
@@ -151,8 +155,24 @@ int DeviceContext::compute_capability() const noexcept { return props.major * 10
 
 int DeviceContext::multiprocessor_count() const noexcept { return props.multiProcessorCount; }
 
+void DeviceContext::apply_tuning_resolution(GpuTuningProfile profile, int tuning_sm_count,
+                                            bool foreign) noexcept {
+    tuning_profile_  = profile;
+    tuning_sm_count_ = tuning_sm_count;
+    tuning_foreign_  = foreign;
+}
+
+GpuTuningProfile DeviceContext::tuning_profile() const noexcept { return tuning_profile_; }
+
+int DeviceContext::tuning_sm_count() const noexcept { return tuning_sm_count_; }
+
+bool DeviceContext::tuning_foreign() const noexcept { return tuning_foreign_; }
+
 DeviceExecutionView DeviceContext::execution_view() const noexcept {
-    return {.stream = stream, .multiprocessor_count = multiprocessor_count()};
+    return {.stream               = stream,
+            .multiprocessor_count = multiprocessor_count(),
+            .tuning_profile       = tuning_profile_,
+            .tuning_sm_count      = tuning_sm_count_};
 }
 
 std::size_t DeviceContext::total_vram() const noexcept { return props.totalGlobalMem; }

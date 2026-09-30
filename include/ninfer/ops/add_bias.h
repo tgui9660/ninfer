@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/device.h"
 #include "core/tensor.h"
 
 #include <cuda_runtime.h>
@@ -18,6 +19,6 @@ namespace ninfer::ops {
  * implementation-defined. `bias` must not overlap `x`. There is no workspace or other state side
  * effect.
  */
-void add_bias(const Tensor& bias, Tensor& x, cudaStream_t stream);
+void add_bias(const Tensor& bias, Tensor& x, DeviceExecutionView execution);
 
 } // namespace ninfer::ops

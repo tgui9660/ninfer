@@ -17,6 +17,16 @@ const Fp8LinearShape& resolve_shape(std::int32_t n, std::int32_t k, LinearPolicy
 }
 } // namespace
 
+Fp8Launch fp8_linear_a16_route(std::int32_t n, std::int32_t k, std::string_view route_name) {
+    for (const auto* shape : kShapes) {
+        if (shape->n != n || shape->k != k || shape->routes == nullptr) continue;
+        for (const Fp8RouteEntry* entry = shape->routes; entry->name != nullptr; ++entry) {
+            if (route_name == entry->name) return entry->launch;
+        }
+    }
+    return nullptr;
+}
+
 std::size_t fp8_linear_workspace_capacity_bytes(std::int32_t n, std::int32_t k, LinearPolicy policy,
                                                 std::int32_t min_tokens, std::int32_t max_tokens) {
     if (min_tokens <= 0 || max_tokens < min_tokens)

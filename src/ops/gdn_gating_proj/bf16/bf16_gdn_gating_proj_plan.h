@@ -53,18 +53,28 @@ struct Bf16GdnNormGatingPlan {
 const char* bf16_gdn_gating_schedule_name(Bf16GdnGatingScheduleId schedule) noexcept;
 
 bool bf16_gdn_gating_admits(const Bf16GdnGatingProblem& problem) noexcept;
+// The 27B SplitK crossovers are profile-gated: a positive tuning SM count below the 5090 value
+// selects the 110-SM-measured table; zero (unpopulated view) and 5090 keep the default table.
+Bf16GdnGatingPlan bf16_gdn_gating_resolve_plan(const Bf16GdnGatingProblem& problem,
+                                               std::int32_t tuning_sm_count);
 Bf16GdnGatingPlan bf16_gdn_gating_resolve_plan(const Bf16GdnGatingProblem& problem);
 Bf16GdnGatingPlan bf16_gdn_gating_resolve_candidate(Bf16GdnGatingScheduleId schedule,
                                                     const Bf16GdnGatingProblem& problem);
 
+// Capacity follows the same tuning-profile selection as resolution (zero = default 5090 table).
 std::size_t bf16_gdn_gating_capacity_workspace_bytes(std::int32_t heads, std::int32_t input_rows,
-                                                     std::int32_t min_cols, std::int32_t max_cols);
+                                                     std::int32_t min_cols, std::int32_t max_cols,
+                                                     std::int32_t tuning_sm_count);
 const char* bf16_gdn_norm_gating_schedule_name(Bf16GdnNormGatingScheduleId schedule) noexcept;
+// Tuning-profile variant; the profile only affects the embedded control plan.
+Bf16GdnNormGatingPlan bf16_gdn_norm_gating_resolve_plan(const Bf16GdnGatingProblem& problem,
+                                                        std::int32_t tuning_sm_count);
 Bf16GdnNormGatingPlan bf16_gdn_norm_gating_resolve_plan(const Bf16GdnGatingProblem& problem);
 std::size_t bf16_gdn_norm_gating_capacity_workspace_bytes(std::int32_t heads,
                                                           std::int32_t input_rows,
                                                           std::int32_t min_cols,
-                                                          std::int32_t max_cols);
+                                                          std::int32_t max_cols,
+                                                          std::int32_t tuning_sm_count);
 
 void bf16_gdn_gating_execute_plan(const Bf16GdnGatingPlan& plan, const Tensor& x,
                                   const Weight& a_weight, const Weight& b_weight,

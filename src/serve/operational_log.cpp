@@ -1,3 +1,4 @@
+#include "core/tuning_profile.h"
 #include "serve/operational_log.h"
 
 #include "product/logging/pretty_format.h"
@@ -451,6 +452,20 @@ void OperationalLog::engine_capacity(const GenerationService& service) const {
                   product::format_pretty_count(memory.kv_capacity_max_page_groups),
                   product::format_pretty_bytes(memory.runtime_reservation_bytes),
                   product::format_pretty_bytes(memory.available_after_startup_bytes));
+
+    const ninfer::TuningSummary tuning = service.tuning_summary();
+    const std::string source = tuning.requested == ninfer::GpuTuningProfile::Auto
+                                   ? "auto-detected"
+                                   : (tuning.foreign ? "explicit, foreign part" : "explicit");
+    if (tuning.foreign) {
+        logger_->warn(
+            "tuning | profile {} | {} | detected part has {} SMs; launch policy follows the "
+            "selected profile",
+            tuning_profile_name(tuning.resolved), source, tuning.tuning_sm_count);
+    } else {
+        logger_->info("tuning | profile {} | {} ({} SMs)", tuning_profile_name(tuning.resolved),
+                      source, tuning.tuning_sm_count);
+    }
 
     if (cache.enabled) {
         logger_->info(

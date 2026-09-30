@@ -20,13 +20,15 @@ std::size_t capacity(DynamicConvPrepareRoute route, int tokens) {
 
 void execute(DynamicConvPrepareRoute route, const Tensor& residual, const Tensor& norm, float eps,
              const Tensor& base, const Weight& weight, Tensor& prepared, Tensor& finish,
-             WorkspaceArena& workspace, cudaStream_t stream) {
+             WorkspaceArena& workspace, DeviceExecutionView execution) {
     auto scope       = workspace.scope();
     const int tokens = residual.ne[1] * residual.ne[2];
     float* partial   = static_cast<float*>(workspace.alloc_bytes(capacity(route, tokens)).data);
-    rmsnorm(residual, norm, eps, false, prepared, stream);
-    bf16_dynamic_grouped_conv_prepare_partial_launch(route, prepared, weight, partial, stream);
-    bf16_dynamic_grouped_conv_prepare_reduce_launch(route, base, partial, prepared, finish, stream);
+    rmsnorm(residual, norm, eps, false, prepared, execution);
+    bf16_dynamic_grouped_conv_prepare_partial_launch(route, prepared, weight, partial,
+                                                     execution.stream);
+    bf16_dynamic_grouped_conv_prepare_reduce_launch(route, base, partial, prepared, finish,
+                                                    execution.stream);
 }
 } // namespace
 
@@ -46,8 +48,9 @@ std::size_t bf16_dynamic_grouped_conv_prepare_workspace_capacity_bytes(int min_w
 void bf16_dynamic_grouped_conv_prepare_dispatch(const Tensor& residual, const Tensor& norm,
                                                 float eps, const Tensor& base, const Weight& weight,
                                                 Tensor& prepared, Tensor& finish,
-                                                WorkspaceArena& workspace, cudaStream_t stream) {
+                                                WorkspaceArena& workspace,
+                                                DeviceExecutionView execution) {
     execute(resolve_route(residual.ne[1] * residual.ne[2]), residual, norm, eps, base, weight,
-            prepared, finish, workspace, stream);
+            prepared, finish, workspace, execution);
 }
 } // namespace ninfer::ops::detail

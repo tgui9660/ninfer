@@ -40,6 +40,15 @@ enum class EnginePurpose : std::uint8_t {
     CausalScoring,
 };
 
+// Launch-policy tuning set selected at startup. Each concrete profile owns a complete set of
+// launch decisions (wave constants plus measured dispatch tables) for one registered sm_120a
+// part; Auto resolves the set from the detected device.
+enum class GpuTuningProfile : std::uint8_t {
+    Auto,
+    Rtx5090,
+    RtxPro5000,
+};
+
 enum class KvCapacityMode : std::uint8_t {
     Explicit,
     Automatic,
@@ -153,6 +162,8 @@ struct EngineOptions {
     std::filesystem::path chat_template_path;
     EnginePurpose purpose              = EnginePurpose::Generation;
     int device                         = 0;
+    // Launch-policy tuning set; Auto resolves it from the detected GPU at startup.
+    GpuTuningProfile tuning_profile    = GpuTuningProfile::Auto;
     std::uint32_t max_context          = 2048; // Logical ceiling of one request or score window.
     KvCapacityPolicy kv_capacity       = KvCapacityPolicy::explicit_capacity(2048);
     std::uint32_t max_concurrency      = 1;
@@ -826,6 +837,16 @@ struct VisionWorkspaceMemorySummary {
     std::size_t handoff_capacity_bytes    = 0;
     std::size_t handoff_active_bytes      = 0;
     std::size_t handoff_peak_bytes        = 0;
+};
+
+// Startup-resolved tuning profile selection. `resolved` is the concrete launch-policy set in
+// use and `tuning_sm_count` its effective wave-sizing SM count; `foreign` marks an explicit
+// profile that names a different part than the detected device.
+struct TuningSummary {
+    GpuTuningProfile requested = GpuTuningProfile::Auto;
+    GpuTuningProfile resolved  = GpuTuningProfile::Rtx5090;
+    int tuning_sm_count        = 0;
+    bool foreign               = false;
 };
 
 struct MemorySummary {

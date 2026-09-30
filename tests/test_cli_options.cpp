@@ -104,5 +104,16 @@ int main() {
                   (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--top-k", "21"});
               }),
               "CLI accepted top_k beyond the executable candidate domain");
+    const ninfer::cli::Options tuned =
+        parse({"ninfer-cli", "model.ninfer", "--prompt", "hello", "--tuning-profile", "rtx-5090"});
+    failures += check(tuned.tuning_profile == ninfer::GpuTuningProfile::Rtx5090,
+                      "--tuning-profile did not select the RTX 5090 tuning set");
+    failures += check(help.find("--tuning-profile") != std::string::npos,
+                      "CLI help omits --tuning-profile");
+    failures += check(rejects([] {
+                          (void)parse({"ninfer-cli", "model.ninfer", "--prompt", "hello",
+                                       "--tuning-profile", "banana"});
+                      }),
+                      "CLI accepted an unknown tuning profile");
     return failures == 0 ? 0 : 1;
 }

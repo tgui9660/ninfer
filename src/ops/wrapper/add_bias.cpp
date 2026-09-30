@@ -24,7 +24,7 @@ std::int64_t checked_numel(const Tensor& t) {
 
 } // namespace
 
-void add_bias(const Tensor& bias, Tensor& x, cudaStream_t stream) {
+void add_bias(const Tensor& bias, Tensor& x, DeviceExecutionView execution) {
     if (bias.dtype != DType::BF16 || x.dtype != DType::BF16) {
         throw std::invalid_argument("add_bias: bias/x must be BF16");
     }
@@ -40,7 +40,7 @@ void add_bias(const Tensor& bias, Tensor& x, cudaStream_t stream) {
     if (bias.data == nullptr || x.data == nullptr) {
         throw std::invalid_argument("add_bias: bias/x data must be non-null");
     }
-    detail::add_bias_launch(bias, x, stream);
+    detail::add_bias_launch(bias, x, execution);
 }
 
 } // namespace ninfer::ops

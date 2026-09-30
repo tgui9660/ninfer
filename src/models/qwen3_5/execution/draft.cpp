@@ -152,7 +152,7 @@ void append_context_impl(Context& state, const Tensor& features, const Tensor& p
                 state.execution.parameters.draft->feature_projection, projected,
                 state.execution.work, state.execution.device.stream);
         ops::rmsnorm(projected, state.execution.parameters.draft->context_norm, config.rms_norm_eps,
-                     false, context, state.execution.device.stream);
+                     false, context, state.execution.device.execution_view());
 
         if (config.dflash2) {
             std::array<ops::ContextKVMaterializeLayerView, ops::kContextKVMaterializeLayers> layers;
@@ -206,11 +206,9 @@ void append_context_impl(Context& state, const Tensor& features, const Tensor& p
                 Tensor key = layer_roots.key.view({dimension(config.attention.head_dim),
                                                    dimension(config.attention.num_key_value_heads),
                                                    layer_columns});
-                ops::rmsnorm(key_raw, weight.key_norm, config.rms_norm_eps, false, key,
-                             state.execution.device.stream);
+                ops::rmsnorm(key_raw, weight.key_norm, config.rms_norm_eps, false, key, state.execution.device.execution_view());
                 ops::rope(layer_positions.view({layer_columns}),
-                          dimension(config.attention.head_dim), config.rope_theta, key,
-                          state.execution.device.stream);
+                          dimension(config.attention.head_dim), config.rope_theta, key, state.execution.device.execution_view());
                 Tensor key_batch =
                     key.view({dimension(config.attention.head_dim),
                               dimension(config.attention.num_key_value_heads), layer_width, batch});
@@ -244,7 +242,7 @@ void prepare_dynamic_branch(ExecutionCore& execution, const Tensor& residual, co
                                                                            batch)));
     ops::rmsnorm_dynamic_grouped_conv_prepare(
         residual, norm, eps, weights.base_kernel, weights.kernel_projection.weight, branch.prepared,
-        branch.finish_delta, scratch, execution.device.stream);
+        branch.finish_delta, scratch, execution.device.execution_view());
 }
 
 void finish_dynamic_branch(ExecutionCore& execution, const Tensor& input,
@@ -427,8 +425,7 @@ void propose_batch_impl(DFlashBatchContext& state, qwen3_5::DFlashDecodeState& f
                 auto attention_scope = state.execution.work.scope();
                 auto roots =
                     workspace::dflash_attention(state.execution.work, target, config, columns);
-                ops::rmsnorm(residual, weight.input_norm, config.rms_norm_eps, false, roots.hidden,
-                             state.execution.device.stream);
+                ops::rmsnorm(residual, weight.input_norm, config.rms_norm_eps, false, roots.hidden, state.execution.device.execution_view());
                 Tensor query_raw = roots.query_raw.view(
                     {dimension(config.attention.head_dim),
                      dimension(config.attention.num_attention_heads), columns});
@@ -450,12 +447,10 @@ void propose_batch_impl(DFlashBatchContext& state, qwen3_5::DFlashDecodeState& f
                 Tensor key =
                     roots.key.view({dimension(config.attention.head_dim),
                                     dimension(config.attention.num_key_value_heads), columns});
-                ops::rmsnorm(query_raw, weight.query_norm, config.rms_norm_eps, false, query,
-                             state.execution.device.stream);
-                ops::rmsnorm(key_raw, weight.key_norm, config.rms_norm_eps, false, key,
-                             state.execution.device.stream);
+                ops::rmsnorm(query_raw, weight.query_norm, config.rms_norm_eps, false, query, state.execution.device.execution_view());
+                ops::rmsnorm(key_raw, weight.key_norm, config.rms_norm_eps, false, key, state.execution.device.execution_view());
                 ops::rope(positions.view({columns}), dimension(config.attention.head_dim),
-                          config.rope_theta, query, key, state.execution.device.stream);
+                          config.rope_theta, query, key, state.execution.device.execution_view());
                 Tensor query_batch = query.view({dimension(config.attention.head_dim),
                                                  dimension(config.attention.num_attention_heads),
                                                  width, batch_size});
@@ -501,7 +496,7 @@ void propose_batch_impl(DFlashBatchContext& state, qwen3_5::DFlashDecodeState& f
                 auto mlp_scope = state.execution.work.scope();
                 auto roots = workspace::dflash_mlp(state.execution.work, target, config, columns);
                 ops::rmsnorm(residual, weight.post_attention_norm, config.rms_norm_eps, false,
-                             roots.hidden, state.execution.device.stream);
+                             roots.hidden, state.execution.device.execution_view());
                 project_swiglu(roots.hidden, weight.mlp.gate_up, roots.intermediate,
                                state.execution.work, state.execution.device.stream);
                 project_add(roots.intermediate, weight.mlp.down, residual, state.execution.work,
@@ -527,7 +522,7 @@ void propose_batch_impl(DFlashBatchContext& state, qwen3_5::DFlashDecodeState& f
             state.execution.work.alloc(DType::BF16, {dimension(target.hidden_size),
                                                      static_cast<std::int32_t>(k) * batch_size});
         ops::rmsnorm(packed, state.execution.parameters.draft->final_norm, config.rms_norm_eps,
-                     false, proposal_hidden, state.execution.device.stream);
+                     false, proposal_hidden, state.execution.device.execution_view());
         Tensor flat_drafts = drafts.view({static_cast<std::int32_t>(k) * batch_size});
         if (state.execution.proposal_head == ProposalHead::Full) {
             Tensor logits = state.execution.work.alloc(

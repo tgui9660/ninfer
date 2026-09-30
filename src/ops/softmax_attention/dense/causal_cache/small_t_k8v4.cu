@@ -62,7 +62,7 @@ void launch_k8v4_partial(const Tensor& q, CacheInput input, const Tensor& positi
 template <typename Geometry, bool MultiBatch, bool Masked>
 void launch_k8v4_reduce(const Tensor& positions, const CausalSmallTInvocation& invocation,
                         std::int32_t splits, const Tensor& partial_acc, const Tensor& partial_m,
-                        const Tensor& partial_l, Tensor& out, cudaStream_t stream) {
+                        const Tensor& partial_l, Tensor& out, std::int32_t tuning_sm_count, cudaStream_t stream) {
     constexpr int Block = 256;
     const dim3 grid(Geometry::QHeads, invocation.width * invocation.batch_size);
     const auto launch = [&]<bool Offset>() {
@@ -93,10 +93,11 @@ void causal_attention_small_t_k8v4_launch_for(const Tensor& q, CacheInput input,
                                               const CausalSmallTInvocation& invocation,
                                               CausalAttentionExecutionEnvelope envelope,
                                               Tensor& partial_acc, Tensor& partial_m,
-                                              Tensor& partial_l, Tensor& out, cudaStream_t stream) {
+                                              Tensor& partial_l, Tensor& out, std::int32_t tuning_sm_count, cudaStream_t stream) {
     const auto logical_capacity = static_cast<std::int32_t>(envelope.max_visible_keys);
     const auto splits           = causal_attention_split_capacity(
-        Geometry::QHeads, invocation.width, cache.storage, envelope, invocation.batch_size);
+        Geometry::QHeads, invocation.width, cache.storage, envelope, invocation.batch_size,
+        tuning_sm_count);
 
     const auto launch_partial = [&]<int Tokens, bool MultiBatch, bool Masked>() {
         launch_k8v4_partial<Geometry, Tokens, MultiBatch, Masked>(
@@ -157,17 +158,17 @@ void causal_attention_small_t_k8v4_launch_for(const Tensor& q, CacheInput input,
     if (invocation.batch_size == 1) {
         if (masked) {
             launch_k8v4_reduce<Geometry, false, true>(positions, invocation, splits, partial_acc,
-                                                      partial_m, partial_l, out, stream);
+                                                      partial_m, partial_l, out, tuning_sm_count, stream);
         } else {
             launch_k8v4_reduce<Geometry, false, false>(positions, invocation, splits, partial_acc,
-                                                       partial_m, partial_l, out, stream);
+                                                       partial_m, partial_l, out, tuning_sm_count, stream);
         }
     } else if (masked) {
         launch_k8v4_reduce<Geometry, true, true>(positions, invocation, splits, partial_acc,
-                                                 partial_m, partial_l, out, stream);
+                                                 partial_m, partial_l, out, tuning_sm_count, stream);
     } else {
         launch_k8v4_reduce<Geometry, true, false>(positions, invocation, splits, partial_acc,
-                                                  partial_m, partial_l, out, stream);
+                                                  partial_m, partial_l, out, tuning_sm_count, stream);
     }
 }
 
@@ -177,7 +178,7 @@ void causal_attention_small_t_k8v4_launch(
     const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& positions,
     const Tensor& valid_columns, const Tensor& table_rows, float scale, PagedKVBatchLayerView cache,
     CausalAttentionExecutionEnvelope envelope, std::int32_t column_begin, std::int32_t width,
-    Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, cudaStream_t stream) {
+    Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, std::int32_t tuning_sm_count, cudaStream_t stream) {
     const CausalAppendInput input{static_cast<const __nv_bfloat16*>(k.data),
                                   static_cast<const __nv_bfloat16*>(v.data)};
     const CausalSmallTInvocation invocation{
@@ -191,19 +192,19 @@ void causal_attention_small_t_k8v4_launch(
     if (q.ne[1] == CausalD256H24Kv4::QHeads) {
         causal_attention_small_t_k8v4_launch_for<CausalD256H24Kv4>(
             q, input, positions, scale, cache, invocation, envelope, partial_acc, partial_m,
-            partial_l, out, stream);
+            partial_l, out, tuning_sm_count, stream);
         return;
     }
     causal_attention_small_t_k8v4_launch_for<CausalD256H16Kv2>(q, input, positions, scale, cache,
                                                                invocation, envelope, partial_acc,
-                                                               partial_m, partial_l, out, stream);
+                                                               partial_m, partial_l, out, tuning_sm_count, stream);
 }
 
 void causal_attention_cached_small_t_k8v4_launch(const Tensor& q, const Tensor& positions,
                                                  float scale, const PagedKVLayerView& cache,
                                                  CausalAttentionExecutionEnvelope envelope,
                                                  Tensor& partial_acc, Tensor& partial_m,
-                                                 Tensor& partial_l, Tensor& out,
+                                                 Tensor& partial_l, Tensor& out, std::int32_t tuning_sm_count,
                                                  cudaStream_t stream) {
     const CausalCachedInput input{};
     const CausalSmallTInvocation invocation{
@@ -218,12 +219,12 @@ void causal_attention_cached_small_t_k8v4_launch(const Tensor& q, const Tensor& 
     if (q.ne[1] == CausalD256H24Kv4::QHeads) {
         causal_attention_small_t_k8v4_launch_for<CausalD256H24Kv4>(
             q, input, positions, scale, batch_cache, invocation, envelope, partial_acc, partial_m,
-            partial_l, out, stream);
+            partial_l, out, tuning_sm_count, stream);
         return;
     }
     causal_attention_small_t_k8v4_launch_for<CausalD256H16Kv2>(
         q, input, positions, scale, batch_cache, invocation, envelope, partial_acc, partial_m,
-        partial_l, out, stream);
+        partial_l, out, tuning_sm_count, stream);
 }
 
 } // namespace ninfer::ops::detail

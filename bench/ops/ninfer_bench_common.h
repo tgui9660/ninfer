@@ -28,7 +28,10 @@
 
 namespace ninfer::bench {
 
-constexpr double kRooflineGBs = 1792.0; // RTX 5090 GDDR7 bandwidth roofline.
+// RTX PRO 5000 Blackwell GDDR7 bandwidth roofline (spec 1344 GB/s; measured sustained read
+// ceiling 1237.4 GB/s, profiles/bench phase 0/3 probes). The historical RTX 5090 roofline was
+// 1792 GB/s spec / 1674.5 GB/s measured.
+constexpr double kRooflineGBs = 1344.0;
 
 inline std::uint16_t f32_to_bf16(float f) {
     std::uint32_t u;
@@ -56,7 +59,7 @@ inline DeviceBuffer make_zeros(std::size_t bytes) {
 
 // cudaDeviceProp memory-clock fields were removed in CUDA 13; the in-process
 // GB/s is informational anyway (ncu is the acceptance gate), so report against
-// the known RTX 5090 roofline constant.
+// the known RTX PRO 5000 Blackwell roofline constant.
 inline double device_peak_bw_gbs(int /*dev*/ = 0) { return kRooflineGBs; }
 
 struct ColdTiming {

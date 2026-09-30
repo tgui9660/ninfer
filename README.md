@@ -252,7 +252,9 @@ The product boundary remains intentionally small:
 `--max-context` is each sequence's logical limit. `--kv-capacity` sizes the shared Main Text KV pool
 used by active requests and retained prefixes; `auto` resolves the largest legal capacity at
 startup from the memory remaining after weights while keeping 1 GiB of sizing headroom. Explicit
-capacities remain fixed for the process lifetime.
+capacities remain fixed for the process lifetime. `--tuning-profile` selects the launch-policy
+tuning set (`auto`, `rtx-5090`, or `rtx-pro-5000`); `auto` resolves the set from the detected GPU
+at startup.
 
 ## Documentation
 

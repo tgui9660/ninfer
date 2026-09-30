@@ -1,3 +1,4 @@
+#include "core/tuning_profile.h"
 #include "serve/serve_options.h"
 #include "product/speculative_options.h"
 
@@ -70,6 +71,7 @@ std::string serve_usage_text(const char* argv0) {
            "[--model-id ID] [--max-context N] [--kv-capacity N|auto] [--max-concurrency N] "
            "[--max-pending-requests N] [--pending-timeout-ms N] "
            "[--prefill-chunk N] [--log-stats-interval-ms N] [--device N] "
+           "[--tuning-profile auto|rtx-5090|rtx-pro-5000] "
            "[--context-cost-presets FILE] "
            "[--max-request-mib N] [--media-cache-mib N] [--media-live-mib N] "
            "[--media-preprocess-threads N] "
@@ -100,9 +102,11 @@ std::string serve_usage_text(const char* argv0) {
            "default\n"
            "       --log-stats-interval-ms defaults to 5000; 0 disables periodic throughput logs\n"
            "       --vision enables media and loads the fixed Vision GPU allocations\n"
-           "       --kv-capacity auto leaves " +
-           std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
-           " MiB of sizing headroom\n"
+            "       --kv-capacity auto leaves " +
+            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
+            " MiB of sizing headroom\n"
+            "       --tuning-profile selects the launch-policy tuning set; auto resolves it from "
+            "the detected GPU\n"
            "       --no-prefix-reuse disables compatible-prefix caching (enabled by default)\n"
            "       context cache defaults: device-state=max-concurrency, private=2x concurrency, "
            "shared=max(max-concurrency,4), anchors=2; Host state=8 slots, Host KV=8192 MiB\n"
@@ -260,6 +264,13 @@ ServeOptions parse_serve_options(int argc, char** argv) {
             options.response_store_max_bytes = static_cast<std::size_t>(mib << 20);
         } else if (arg == "--device") {
             options.device = parse_nonnegative_int(require_value("--device"), "device");
+        } else if (arg == "--tuning-profile") {
+            const auto parsed = parse_tuning_profile(require_value("--tuning-profile"));
+            if (!parsed) {
+                throw std::invalid_argument(
+                    "--tuning-profile must be auto, rtx-5090, or rtx-pro-5000");
+            }
+            options.tuning_profile = *parsed;
         } else if (arg == "--kv-dtype") {
             options.kv_cache = parse_kv_dtype(require_value("--kv-dtype"));
         } else if (arg == "--spec") {

@@ -63,10 +63,11 @@ struct BenchOptions {
     std::uint32_t prefill_chunk = kDefaultPrefillChunk;
     KvCacheStorage kv_cache     = KvCacheStorage::BFloat16;
     SpeculativeOptions speculative;
-    int device            = 0;
-    bool use_cuda_graph   = true;
-    bool profile_measured = false;
-    OutputFormat output   = OutputFormat::Table;
+    int device                      = 0;
+    GpuTuningProfile tuning_profile = GpuTuningProfile::Auto;
+    bool use_cuda_graph             = true;
+    bool profile_measured           = false;
+    OutputFormat output             = OutputFormat::Table;
     std::string output_file;
     bool help_requested = false;
 };
@@ -104,6 +105,8 @@ struct BenchEnvironment {
     std::uint32_t max_context   = 0;
     std::uint32_t prefill_chunk = kDefaultPrefillChunk;
     KvCacheStorage kv_cache     = KvCacheStorage::BFloat16;
+    // Resolved launch-policy tuning set reported by the Engine at startup.
+    std::string tuning_profile;
     SpeculativeOptions speculative;
     bool use_cuda_graph                            = true;
     bool decode_graph_primed                       = false;

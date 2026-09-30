@@ -1,6 +1,8 @@
+#include "core/tuning_profile.h"
 #include "core/weight.h"
 #include "ninfer/ops/gdn_gating_proj.h"
 #include "ninfer_bench_common.h"
+#include "ops/gdn_gating_proj/bf16/bf16_gdn_gating_proj_plan.h"
 
 #include <cuda_profiler_api.h>
 #include <algorithm>
@@ -20,7 +22,8 @@ namespace {
 struct Options {
     bool geometry35 = false, parent = true, norm = true, profile = false;
     std::vector<int> tokens{1, 2, 4, 6, 8, 9, 16, 32, 64, 128};
-    std::string execution = "graph", cache = "cold", csv;
+    std::string execution = "graph", cache = "cold", csv, schedule;
+    GpuTuningProfile tuning_profile = GpuTuningProfile::Auto;
     int warmup = 10, repeat = 61, graph_calls = 1;
 };
 
@@ -29,7 +32,13 @@ void help() {
         << "usage: ninfer_gdn_gating_proj_bench [--geometry 27b|35b] [--weights parent|split] "
            "[--op norm|control] [--tokens T,...] [--execution eager|graph|both] [--cache "
            "cold|warm|both] "
-           "[--graph-calls N] [--warmup N] [--repeat N] [--profile] [--csv-out PATH]\n";
+           "[--schedule NAME] [--tuning-profile auto|rtx-5090|rtx-pro-5000] [--graph-calls N] "
+           "[--warmup N] [--repeat N] [--profile] [--csv-out PATH]\n"
+           << "  --schedule forces one control-Op candidate route (bypasses dispatch; control Op\n"
+           << "              only); NAME matches bf16_gdn_gating_schedule_name, e.g. "
+           "mma.cooperative_split8\n"
+           << "  --tuning-profile selects the launch-policy table for dispatch and capacity;\n"
+           << "              the resolved profile is self-labeled in the output.\n";
 }
 
 int integer(std::string_view raw, int low, int high) {
@@ -86,7 +95,15 @@ Options parse(int argc, char** argv) {
             o.graph_calls = integer(next(), 1, 128);
         else if (a == "--csv-out")
             o.csv = next();
-        else if (a == "--profile")
+        else if (a == "--schedule")
+            o.schedule = next();
+        else if (a == "--tuning-profile") {
+            const auto parsed = parse_tuning_profile(next());
+            if (!parsed)
+                throw std::invalid_argument(
+                    "--tuning-profile must be auto, rtx-5090, or rtx-pro-5000");
+            o.tuning_profile = *parsed;
+        } else if (a == "--profile")
             o.profile = true;
         else
             throw std::invalid_argument("unknown argument: " + std::string(a));
@@ -97,12 +114,39 @@ Options parse(int argc, char** argv) {
         throw std::invalid_argument("invalid cache state");
     if (o.geometry35 && !o.parent)
         throw std::invalid_argument("35b requires the parent weight form");
+    if (!o.schedule.empty() && o.norm)
+        throw std::invalid_argument("--schedule applies to the control Op only (--op control)");
     if (o.graph_calls > 1 && (o.execution != "graph" || o.cache != "warm"))
         throw std::invalid_argument("repeated graphs require --execution graph --cache warm");
     if (o.profile && (o.tokens.size() != 1 || o.execution == "both" || o.cache == "both"))
         throw std::invalid_argument(
             "profile requires one token extent, execution, and cache state");
     return o;
+}
+
+ninfer::ops::detail::Bf16GdnGatingScheduleId parse_schedule(std::string_view name) {
+    constexpr ninfer::ops::detail::Bf16GdnGatingScheduleId all[] = {
+        ninfer::ops::detail::Bf16GdnGatingScheduleId::GemvPairedRows,
+        ninfer::ops::detail::Bf16GdnGatingScheduleId::SmallTSplit10,
+        ninfer::ops::detail::Bf16GdnGatingScheduleId::SimtWarpRowC4,
+        ninfer::ops::detail::Bf16GdnGatingScheduleId::SimtWarpRowC8,
+        ninfer::ops::detail::Bf16GdnGatingScheduleId::MmaCooperativeSplit32,
+        ninfer::ops::detail::Bf16GdnGatingScheduleId::MmaCooperativeSplit16,
+        ninfer::ops::detail::Bf16GdnGatingScheduleId::MmaCooperativeSplit8,
+        ninfer::ops::detail::Bf16GdnGatingScheduleId::MmaCooperativeSplit4,
+        ninfer::ops::detail::Bf16GdnGatingScheduleId::MmaCooperativeSplit2,
+        ninfer::ops::detail::Bf16GdnGatingScheduleId::MmaUnsplit,
+    };
+    for (const auto id : all) {
+        const std::string canonical = ninfer::ops::detail::bf16_gdn_gating_schedule_name(id);
+        if (name == canonical ||
+            (name.size() < canonical.size() &&
+             canonical.compare(canonical.size() - name.size(), name.size(), name) == 0 &&
+             canonical[canonical.size() - name.size() - 1] == '.')) {
+            return id;
+        }
+    }
+    throw std::invalid_argument("unknown --schedule: " + std::string(name));
 }
 
 DeviceBuffer bf16_values(std::size_t count, std::uint32_t seed, float extent) {
@@ -156,12 +200,30 @@ void run(const Options& o, int t, DeviceExecutionView execution, DeviceBuffer& f
     const auto wp = weight(w.p, 2 * heads, hidden), wa = weight(w.p, heads, hidden),
                wb = weight(static_cast<const std::uint16_t*>(w.p) + std::size_t(heads) * hidden,
                            heads, hidden);
-    const auto capacity =
-        o.norm ? ops::gdn_norm_gating_proj_workspace_capacity_bytes(heads, hidden, t, t)
-               : ops::gdn_gating_proj_workspace_capacity_bytes(heads, hidden, t, t);
+    ninfer::ops::detail::Bf16GdnGatingScheduleId forced_schedule{};
+    const bool have_forced = !o.schedule.empty();
+    if (have_forced) forced_schedule = parse_schedule(o.schedule);
+    const auto capacity = [&] {
+        if (have_forced)
+            return ninfer::ops::detail::bf16_gdn_gating_resolve_candidate(forced_schedule, {heads, hidden, t})
+                .workspace_bytes;
+        return o.norm
+                   ? ops::gdn_norm_gating_proj_workspace_capacity_bytes(heads, hidden, t, t,
+                                                                        execution.tuning_sm_count)
+                   : ops::gdn_gating_proj_workspace_capacity_bytes(heads, hidden, t, t,
+                                                                   execution.tuning_sm_count);
+    }();
     WorkspaceArena ws(std::max<std::size_t>(capacity, 256));
     auto launch = [&](cudaStream_t stream) {
-        const DeviceExecutionView e{stream, execution.multiprocessor_count};
+        const DeviceExecutionView e{.stream               = stream,
+                                    .multiprocessor_count = execution.multiprocessor_count,
+                                    .tuning_profile       = execution.tuning_profile,
+                                    .tuning_sm_count      = execution.tuning_sm_count};
+        if (have_forced) {
+            ninfer::ops::detail::bf16_gdn_gating_execute_candidate(forced_schedule, tx, wa, wb, ta, td, ws, tg,
+                                                     tb, e);
+            return;
+        }
         if (o.norm) {
             if (o.parent)
                 ops::gdn_norm_gating_proj(tx, tn, 1.0e-6f, wp, ta, td, ws, th, tg, tb, e);
@@ -220,10 +282,11 @@ void run(const Options& o, int t, DeviceExecutionView execution, DeviceBuffer& f
             if (ws.used() != 0 || ws.peak_used() != capacity)
                 throw std::runtime_error("workspace query/peak mismatch");
             std::cout << (o.geometry35 ? "35b" : "27b") << ' ' << (o.norm ? "norm" : "control")
-                      << " T=" << t << ' ' << mode << ' ' << cache << " median=" << time.median_us
-                      << " min=" << time.min_us << " p95=" << time.p95_us
-                      << " us workspace=" << capacity << " nodes=" << (gr ? graph.nodes() : 0)
-                      << " calls=" << calls << '\n';
+                      << " T=" << t << ' ' << mode << ' ' << cache
+                      << (have_forced ? " schedule=" + o.schedule : "")
+                      << " median=" << time.median_us << " min=" << time.min_us
+                      << " p95=" << time.p95_us << " us workspace=" << capacity
+                      << " nodes=" << (gr ? graph.nodes() : 0) << " calls=" << calls << '\n';
             if (csv)
                 *csv << (o.geometry35 ? "35b" : "27b") << ',' << (o.norm ? "norm" : "control")
                      << ',' << (o.parent ? "parent" : "split") << ',' << t << ',' << mode << ','
@@ -247,6 +310,20 @@ int main(int argc, char** argv) {
         CUDA_CHECK(cudaGetDevice(&device));
         cudaDeviceProp props{};
         CUDA_CHECK(cudaGetDeviceProperties(&props, device));
+        DeviceContext context;
+        const auto tuning =
+            resolve_tuning_profile(o.tuning_profile, context.compute_capability(),
+                                   context.multiprocessor_count());
+        context.apply_tuning_resolution(tuning.concrete, tuning.tuning_sm_count, tuning.foreign);
+        const auto view_for = [&](cudaStream_t stream) {
+            return DeviceExecutionView{.stream               = stream,
+                                       .multiprocessor_count = context.multiprocessor_count(),
+                                       .tuning_profile       = context.tuning_profile(),
+                                       .tuning_sm_count      = context.tuning_sm_count()};
+        };
+        std::cout << "# tuning_profile=" << tuning_profile_name(tuning.concrete)
+                  << " tuning_sm_count=" << context.tuning_sm_count()
+                  << (tuning.foreign ? " foreign=yes" : "") << '\n';
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         DeviceBuffer flush(256ULL << 20);
@@ -258,7 +335,7 @@ int main(int argc, char** argv) {
                    "workspace_peak_bytes,median_us,min_us,p95_us\n";
         }
         for (int t : o.tokens)
-            run(o, t, {stream, props.multiProcessorCount}, flush, csv.is_open() ? &csv : nullptr);
+            run(o, t, view_for(stream), flush, csv.is_open() ? &csv : nullptr);
         CUDA_CHECK(cudaStreamDestroy(stream));
         return 0;
     } catch (const std::exception& e) {

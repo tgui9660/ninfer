@@ -26,7 +26,7 @@ struct CausalSmallTInvocation {
 std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t tokens,
                                              KvCacheStorage cache_storage,
                                              CausalAttentionExecutionEnvelope envelope,
-                                             std::int32_t batch_size = 1);
+                                             std::int32_t batch_size, std::int32_t tuning_sm_count);
 
 CausalAttentionRoute causal_attention_resolve_route(std::int32_t q_heads, std::int32_t width,
                                                     std::int32_t batch_size, KvCacheStorage storage,
@@ -38,51 +38,51 @@ void causal_attention_small_t_launch(
     const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& positions,
     const Tensor& valid_columns, const Tensor& table_rows, float scale, PagedKVBatchLayerView cache,
     CausalAttentionExecutionEnvelope envelope, std::int32_t column_begin, std::int32_t width,
-    Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, cudaStream_t stream);
+    Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, std::int32_t tuning_sm_count, cudaStream_t stream);
 
 void causal_attention_cached_small_t_launch(const Tensor& q, const Tensor& positions, float scale,
                                             const PagedKVLayerView& cache,
                                             CausalAttentionExecutionEnvelope envelope,
                                             Tensor& partial_acc, Tensor& partial_m,
-                                            Tensor& partial_l, Tensor& out, cudaStream_t stream);
+                                            Tensor& partial_l, Tensor& out, std::int32_t tuning_sm_count, cudaStream_t stream);
 
 void causal_attention_small_t_fp8_launch(
     const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& positions,
     const Tensor& valid_columns, const Tensor& table_rows, float scale, PagedKVBatchLayerView cache,
     CausalAttentionExecutionEnvelope envelope, std::int32_t column_begin, std::int32_t width,
-    Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, cudaStream_t stream);
+    Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, std::int32_t tuning_sm_count, cudaStream_t stream);
 
 void causal_attention_cached_small_t_fp8_launch(const Tensor& q, const Tensor& positions,
                                                 float scale, const PagedKVLayerView& cache,
                                                 CausalAttentionExecutionEnvelope envelope,
                                                 Tensor& partial_acc, Tensor& partial_m,
-                                                Tensor& partial_l, Tensor& out,
+                                                Tensor& partial_l, Tensor& out, std::int32_t tuning_sm_count,
                                                 cudaStream_t stream);
 
 void causal_attention_small_t_nvfp4_launch(
     const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& positions,
     const Tensor& valid_columns, const Tensor& table_rows, float scale, PagedKVBatchLayerView cache,
     CausalAttentionExecutionEnvelope envelope, std::int32_t column_begin, std::int32_t width,
-    Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, cudaStream_t stream);
+    Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, std::int32_t tuning_sm_count, cudaStream_t stream);
 
 void causal_attention_cached_small_t_nvfp4_launch(const Tensor& q, const Tensor& positions,
                                                   float scale, const PagedKVLayerView& cache,
                                                   CausalAttentionExecutionEnvelope envelope,
                                                   Tensor& partial_acc, Tensor& partial_m,
-                                                  Tensor& partial_l, Tensor& out,
+                                                  Tensor& partial_l, Tensor& out, std::int32_t tuning_sm_count,
                                                   cudaStream_t stream);
 
 void causal_attention_small_t_k8v4_launch(
     const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& positions,
     const Tensor& valid_columns, const Tensor& table_rows, float scale, PagedKVBatchLayerView cache,
     CausalAttentionExecutionEnvelope envelope, std::int32_t column_begin, std::int32_t width,
-    Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, cudaStream_t stream);
+    Tensor& partial_acc, Tensor& partial_m, Tensor& partial_l, Tensor& out, std::int32_t tuning_sm_count, cudaStream_t stream);
 
 void causal_attention_cached_small_t_k8v4_launch(const Tensor& q, const Tensor& positions,
                                                  float scale, const PagedKVLayerView& cache,
                                                  CausalAttentionExecutionEnvelope envelope,
                                                  Tensor& partial_acc, Tensor& partial_m,
-                                                 Tensor& partial_l, Tensor& out,
+                                                 Tensor& partial_l, Tensor& out, std::int32_t tuning_sm_count,
                                                  cudaStream_t stream);
 
 void causal_attention_prompt_launch(const Tensor& q, const Tensor& k, const Tensor& v,

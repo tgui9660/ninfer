@@ -14,6 +14,13 @@ namespace {
 constexpr std::int32_t kTextHeadDim = 256;
 constexpr std::int32_t kVisionDim   = 72;
 
+void require_execution(DeviceExecutionView execution, const char* op) {
+    if (execution.tuning_sm_count <= 0) {
+        throw std::invalid_argument(std::string(op) +
+                                    ": execution tuning SM count must be positive");
+    }
+}
+
 std::int64_t numel_allow_zero(const Tensor& tensor, const char* label) {
     bool zero      = false;
     std::int64_t n = 1;
@@ -99,7 +106,8 @@ void require_model_mode(int axes, int rotary_dim, std::int32_t head_dim) {
 } // namespace
 
 void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
-          cudaStream_t stream) {
+          DeviceExecutionView execution) {
+    require_execution(execution, "rope");
     require_common(positions, rotary_dim, theta);
     if (q.dtype != DType::BF16 || k.dtype != DType::BF16) {
         throw std::invalid_argument("rope: q/k must be BF16");
@@ -120,10 +128,12 @@ void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tenso
     if (q.data == nullptr || k.data == nullptr) {
         throw std::invalid_argument("rope: q/k data must be non-null");
     }
-    detail::rope_launch(positions, rotary_dim, theta, q, k, stream);
+    detail::rope_launch(positions, rotary_dim, theta, q, k, execution);
 }
 
-void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaStream_t stream) {
+void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x,
+          DeviceExecutionView execution) {
+    require_execution(execution, "rope");
     require_common(positions, rotary_dim, theta);
     if (x.dtype != DType::BF16) { throw std::invalid_argument("rope: tensor must be BF16"); }
     (void)numel_allow_zero(positions, "positions");
@@ -137,7 +147,7 @@ void rope(const Tensor& positions, int rotary_dim, float theta, Tensor& x, cudaS
     if (x_numel == 0) { return; }
     require_positions_storage(positions);
     if (x.data == nullptr) { throw std::invalid_argument("rope: tensor data must be non-null"); }
-    detail::rope_single_launch(positions, rotary_dim, theta, x, stream);
+    detail::rope_single_launch(positions, rotary_dim, theta, x, execution);
 }
 
 } // namespace ninfer::ops

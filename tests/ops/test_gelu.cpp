@@ -48,7 +48,7 @@ int run_case(const char* label, ops::GeluMode mode, std::int32_t rows, std::int3
     device_input.copy_from_host(input_bits.data(), device_input.bytes());
 
     Tensor input_tensor(device_input.data(), DType::BF16, {rows, columns});
-    ops::gelu(input_tensor, mode, nullptr);
+    ops::gelu(input_tensor, mode, DeviceExecutionView{});
     cuda_synchronize();
 
     int failures = verify_pointwise(label, from_device_bf16(device_input.data(), count), expected,
@@ -70,7 +70,7 @@ int run_edge_case(ops::GeluMode mode, const char* label) {
     device_input.copy_from_host(input_bits.data(), device_input.bytes());
     Tensor input_tensor(device_input.data(), DType::BF16,
                         {static_cast<std::int32_t>(input.size())});
-    ops::gelu(input_tensor, mode, nullptr);
+    ops::gelu(input_tensor, mode, DeviceExecutionView{});
     cuda_synchronize();
 
     int failures = verify_pointwise(label, from_device_bf16(device_input.data(), input.size()),

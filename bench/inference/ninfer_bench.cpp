@@ -1,3 +1,4 @@
+#include "core/tuning_profile.h"
 #include "ninfer_bench_support.h"
 
 #include "ninfer/engine.h"
@@ -150,6 +151,7 @@ int main(int argc, char** argv) {
         ninfer::EngineOptions engine_options;
         engine_options.artifact_path = options.artifact_path;
         engine_options.device        = options.device;
+        engine_options.tuning_profile = options.tuning_profile;
         engine_options.max_context   = max_context;
         engine_options.kv_capacity   = ninfer::KvCapacityPolicy::explicit_capacity(max_context);
         engine_options.prefill_chunk = options.prefill_chunk;
@@ -180,8 +182,9 @@ int main(int argc, char** argv) {
                   << ", kv_cache=" << ninfer::bench::kv_cache_name(options.kv_cache) << ")\n";
         ninfer::Engine engine(std::move(engine_options));
         fill_cuda_environment(env, options.device);
-        env.load   = engine.load_summary();
-        env.memory = engine.memory_summary();
+        env.load           = engine.load_summary();
+        env.memory         = engine.memory_summary();
+        env.tuning_profile = tuning_profile_name(engine.tuning_summary().resolved);
 
         prime_decode_graph(engine, env, corpus);
 

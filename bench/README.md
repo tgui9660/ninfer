@@ -58,7 +58,8 @@ ninfer_bench --weights <artifact.ninfer>
           [--max-ctx <tokens>] [--prefill-chunk <tokens>]
           [--kv-dtype <bf16|int8|fp8|nvfp4|k8v4>]
           [--spec <mtp|dflash|dflash2> --draft-tokens <n>] [--lm-head-draft]
-          [--device <id>] [--no-cuda-graph] [--profile-measured]
+          [--device <id>] [--tuning-profile <auto|rtx-5090|rtx-pro-5000>]
+          [--no-cuda-graph] [--profile-measured]
           [-o, --output <table|json|csv>] [--output-file <path>]
 ```
 
@@ -265,10 +266,12 @@ Every ordinary sample is cold-cache: a 256 MiB L2 eviction write completes befor
 interval. Reported effective bandwidth uses the encoded weight planes once, one BF16 activation
 read, and one BF16 output write. Reported FLOPs are the mathematical `2*N*K*T`; neither metric
 copies route-private tile, replay, padding, split, schedule, host-launcher, or kernel-instance
-behavior. The fixed RTX 5090 memory reference is `1792 GB/s` DRAM bandwidth. Because `AllowA4` is
+behavior. The fixed RTX PRO 5000 Blackwell memory reference is `1344 GB/s` DRAM bandwidth
+(historical RTX 5090 reference: `1792 GB/s`). Because `AllowA4` is
 a permission rather than an execution-profile label, the long-lived benchmark does not infer or
 report private activation compute or Tensor Core utilization. `READ_%` additionally compares the same one-read model
-bytes with the measured `1674.5 GB/s` pure-read ceiling from `tools/hbm_bandwidth_probe.cu`; it is
+bytes with the measured `1237.4 GB/s` pure-read ceiling from `tools/hbm_bandwidth_probe.cu`
+(historical RTX 5090: `1674.5 GB/s`); it is
 the practical utilization measure for read-dominated points. Physical traffic and instruction
 utilization still require NCU.
 
@@ -758,8 +761,9 @@ cmake --build build --parallel --target ninfer_nvfp4_linear_swiglu_bench
 `ninfer_fp8_linear_swiglu_bench` measures the public row-scaled FP8 `[34816,5120] ->
 [17408,T]` profile. `--policy a8` measures the production resolver, including caller-owned
 activation workspace and the fused SwiGLU output; `--policy a16` measures the public A16 form.
-The Tensor Core percentage uses the RTX 5090 dense FP8/FP32-accumulate reference of 419 TFLOP/s
-only for extents that the production resolver sends to A8.
+The Tensor Core percentage uses the RTX PRO 5000 Blackwell dense FP8/FP32-accumulate reference of
+348.8 TFLOP/s (boost clock; historical RTX 5090: 419 TFLOP/s) only for extents that the production
+resolver sends to A8.
 
 ```bash
 cmake --build build --parallel --target ninfer_fp8_linear_swiglu_bench
@@ -789,8 +793,8 @@ cmake --build build --parallel --target ninfer_q5_linear_add_bench
 in-place BF16 residual epilogue. Each production sample measures one complete public call after
 restoring the residual outside the timed region and flushing L2.
 Effective bandwidth counts the weight once, the activation once, and
-the residual read plus write; its `READ_%` and `TC_%` use the benchmark's explicit RTX 5090 BF16
-references.
+the residual read plus write; its `READ_%` and `TC_%` use the benchmark's explicit RTX PRO 5000
+Blackwell BF16 references (historical RTX 5090: 1792 GB/s DRAM, 209.5 TFLOP/s dense).
 
 ```bash
 cmake --build build --parallel --target ninfer_bf16_linear_add_bench
@@ -832,7 +836,8 @@ including activation quantization, caller-owned workspace, contraction, residual
 in-place BF16 write. `--policy a8` follows the independent production resolver of the selected
 semantic Op: `[5120,6144]` uses A16 below `T=22`, while `[5120,17408]` uses A16 below `T=25`; larger
 extents use FP8/FP32-accumulate Tensor Core contraction. `TC_%` is reported only when that A8 route
-actually executes, against the RTX 5090 419 TFLOP/s reference.
+actually executes, against the RTX PRO 5000 Blackwell 348.8 TFLOP/s reference (historical RTX 5090:
+419 TFLOP/s).
 
 ```bash
 cmake --build build --parallel --target ninfer_fp8_linear_add_bench

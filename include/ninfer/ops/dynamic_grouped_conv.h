@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/device.h"
 #include "core/weight.h"
 #include "core/arena.h"
 #include "core/tensor.h"
@@ -64,7 +65,7 @@ void rmsnorm_dynamic_grouped_conv_prepare(const Tensor& residual, const Tensor& 
                                           float eps, const Tensor& base_kernel,
                                           const Weight& kernel_projection_weight, Tensor& prepared,
                                           Tensor& finish_delta, WorkspaceArena& workspace,
-                                          cudaStream_t stream);
+                                          DeviceExecutionView execution);
 
 /**
  * Returns the transient capacity required by linear_dynamic_grouped_conv_add for every width/batch

@@ -10,6 +10,7 @@ add_library(ninfer_core STATIC
   linear_attention_state.cpp
   layout.cpp
   tensor.cpp
+  tuning_profile.cpp
   weight_view.cpp
   decode_graph.cpp
 )

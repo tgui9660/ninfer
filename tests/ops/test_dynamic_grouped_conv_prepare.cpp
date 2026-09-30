@@ -1,3 +1,5 @@
+#include "core/device.h"
+#include "core/tuning_profile.h"
 #include "core/weight.h"
 #include "ninfer/ops/dynamic_grouped_conv.h"
 #include "core/decode_graph.h"
@@ -263,9 +265,13 @@ int run() {
                 // stream.
                 cuda_check(cudaStreamSynchronize(nullptr), "fixture fill synchronize");
                 workspace.reset_peak();
+                const DeviceExecutionView execution{.stream          = stream,
+                                                    .tuning_profile  = GpuTuningProfile::Rtx5090,
+                                                    .tuning_sm_count = kRtx5090SmCount};
                 const auto launch = [&] {
                     ops::rmsnorm_dynamic_grouped_conv_prepare(residual, norm, kEps, base, weight,
-                                                              prepared, finish, workspace, stream);
+                                                              prepared, finish, workspace,
+                                                              execution);
                 };
                 if (replay) {
                     DecodeGraphDefinition definition;

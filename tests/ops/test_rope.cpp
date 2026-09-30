@@ -1,4 +1,5 @@
 #include "core/device.h"
+#include "core/tuning_profile.h"
 #include "ninfer/ops/rope.h"
 #include "ops/op_tester.h"
 
@@ -19,6 +20,14 @@ namespace {
 
 constexpr float kTextTheta   = 1.0e7F;
 constexpr float kVisionTheta = 10'000.0F;
+
+// The Op selects its launch policy from the profile's wave-sizing SM count; tests exercise the
+// RTX 5090 column on whatever part runs them.
+DeviceExecutionView rope_execution(cudaStream_t stream) {
+    return {.stream          = stream,
+            .tuning_profile  = GpuTuningProfile::Rtx5090,
+            .tuning_sm_count = kRtx5090SmCount};
+}
 
 // Either member of a rotated pair can approach zero through cancellation. The scale-invariant
 // RoPE BF16 profile therefore bounds each output by the FP64 norm of its public input pair rather
@@ -270,7 +279,8 @@ int run_pair_case(const Geometry& geometry, int q_heads, int k_heads, int first_
     q_tensor.nb[2] = static_cast<std::int64_t>(q_stride) * sizeof(std::uint16_t);
     k_tensor.nb[2] = static_cast<std::int64_t>(k_stride) * sizeof(std::uint16_t);
 
-    ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor, nullptr);
+    ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor,
+               rope_execution(nullptr));
     cuda_synchronize();
 
     if (graph) {
@@ -279,7 +289,8 @@ int run_pair_case(const Geometry& geometry, int q_heads, int k_heads, int first_
         cudaGraphExec_t executable;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
-        ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor, stream);
+        ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, q_tensor, k_tensor,
+               rope_execution(stream));
         CUDA_CHECK(cudaStreamEndCapture(stream, &captured));
         CUDA_CHECK(cudaGraphInstantiate(&executable, captured, nullptr, nullptr, 0));
         for (int replay = 0; replay < 2; ++replay) {
@@ -341,7 +352,8 @@ int run_single_case(const Geometry& geometry, int heads, int first_position, int
     Tensor position_tensor(position_device.data(), DType::I32, {geometry.tokens, geometry.axes});
     Tensor tensor(device.data(), DType::BF16, {geometry.head_dim, heads, geometry.tokens});
     tensor.nb[2] = static_cast<std::int64_t>(token_stride) * sizeof(std::uint16_t);
-    ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, tensor, nullptr);
+    ops::rope(position_tensor, geometry.rotary_dim, geometry.theta, tensor,
+               rope_execution(nullptr));
     cuda_synchronize();
 
     const auto got          = from_device<std::uint16_t>(device.data(), storage.size());
@@ -402,7 +414,8 @@ int run_vision_packed_case() {
     Tensor k_tensor(packed_data + kPlane, DType::BF16, {kHeadDim, kHeads, kTokens});
     q_tensor.nb[2] = static_cast<std::int64_t>(kStride) * sizeof(std::uint16_t);
     k_tensor.nb[2] = static_cast<std::int64_t>(kStride) * sizeof(std::uint16_t);
-    ops::rope(position_tensor, kHeadDim, kVisionTheta, q_tensor, k_tensor, nullptr);
+    ops::rope(position_tensor, kHeadDim, kVisionTheta, q_tensor, k_tensor,
+               rope_execution(nullptr));
     cuda_synchronize();
 
     const auto got = from_device<std::uint16_t>(packed_device.data(), packed.size());
