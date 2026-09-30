@@ -30,7 +30,7 @@ mkdir -p logs
     --host 0.0.0.0 --port 8888 \
     --model-id qwen3-coder:30b \
     --max-concurrency 2 --pending-timeout-ms 300000 \
-    --max-context 262144 --kv-dtype fp8 --kv-capacity auto \
+    --max-context 262144 --kv-dtype k8v4 --kv-capacity auto \
     --spec mtp --draft-tokens 4 \
     --prefill-chunk 4096 \
     --device-state-slots 4 \
