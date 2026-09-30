@@ -1,5 +1,8 @@
 # Plan: NInfer tuning for RTX PRO 5000 Blackwell (agent handoff)
 
+SUPERSEDED (2026-09-30): current authority is `/home/botman/code/ninfer/RTX5K-HANDOFF.md`.
+Retained for Phase 0–5 history only.
+
 Status: Phases S + 2a + 2b + 3 (all rows) done; **no GPU workload without an explicit
 per-window go** (2026-09-28). Pre-landing E2E A/B (2026-09-29) in both leg orders
 (`profiles/bench/ab-e2e-20260929-{164756,170232}/`). Post-landing ACCEPTANCE A/B
