@@ -3,6 +3,7 @@
 #include "ninfer/ops/attention_geometry.h"
 
 #include "core/arena.h"
+#include "core/device.h"
 #include "core/paged_kv_cache.h"
 #include "core/tensor.h"
 
@@ -140,7 +141,7 @@ void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
                               const Tensor& kv_table_rows, AttentionHeadGeometry geometry,
                               float scale, PagedKVBatchLayerView cache,
                               CausalAttentionExecutionEnvelope envelope, WorkspaceArena& workspace,
-                              Tensor& out, cudaStream_t stream);
+                              Tensor& out, DeviceExecutionView execution);
 
 /**
  * Read-only single-sequence causal attention over an already populated cache.
@@ -154,7 +155,8 @@ void causal_softmax_attention_cached(const Tensor& q, const Tensor& positions,
                                      AttentionHeadGeometry geometry, float scale,
                                      const PagedKVLayerView& cache,
                                      CausalAttentionExecutionEnvelope envelope,
-                                     WorkspaceArena& workspace, Tensor& out, cudaStream_t stream);
+                                     WorkspaceArena& workspace, Tensor& out,
+                                     DeviceExecutionView execution);
 
 /**
  * Return transient capacity for every W in the inclusive interval at one exact batch size. The
@@ -164,7 +166,7 @@ void causal_softmax_attention_cached(const Tensor& q, const Tensor& positions,
 [[nodiscard]] std::size_t causal_softmax_attention_workspace_capacity_bytes(
     AttentionHeadGeometry geometry, KvCacheStorage cache_storage,
     CausalAttentionExecutionEnvelope envelope, std::int32_t batch_size, std::int32_t min_tokens,
-    std::int32_t max_tokens);
+    std::int32_t max_tokens, std::int32_t tuning_sm_count);
 
 /**
  * Non-causal grouped-query attention over persistent context plus one live query block.

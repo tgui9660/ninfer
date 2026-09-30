@@ -1,8 +1,7 @@
 #pragma once
 
+#include "core/device.h"
 #include "core/tensor.h"
-
-#include <cuda_runtime.h> // cudaStream_t
 
 namespace ninfer::ops {
 
@@ -21,6 +20,6 @@ namespace ninfer::ops {
  * is no workspace or persistent state side effect.
  */
 void rmsnorm(const Tensor& x, const Tensor& weight, float eps, bool unit_offset, Tensor& out,
-             cudaStream_t stream);
+             DeviceExecutionView execution);
 
 } // namespace ninfer::ops

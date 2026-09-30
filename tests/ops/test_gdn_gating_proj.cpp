@@ -1,7 +1,7 @@
+#include "core/tuning_profile.h"
 #include "core/weight.h"
 #include "ninfer/ops/gdn_gating_proj.h"
 #include "ninfer/ops/weight_input.h"
-
 #include "ops/op_tester.h"
 #include "core/decode_graph.h"
 
@@ -265,7 +265,7 @@ int run_projection_case(const Geometry& geometry, std::int32_t tokens, std::uint
     Tensor tensor_g(device_g.data(), DType::FP32, {geometry.heads, tokens});
     Tensor tensor_beta(device_beta.data(), DType::FP32, {geometry.heads, tokens});
     const std::size_t workspace_bytes = ops::gdn_gating_proj_workspace_capacity_bytes(
-        geometry.heads, geometry.hidden, tokens, tokens);
+        geometry.heads, geometry.hidden, tokens, tokens, execution.tuning_sm_count);
     WorkspaceArena workspace(std::max<std::size_t>(256, workspace_bytes));
 
     if (geometry.parent_weight) {
@@ -365,7 +365,7 @@ int run_norm_projection_case(const Geometry& geometry, std::int32_t tokens, std:
     Tensor ta(device_a_log.p, DType::FP32, {geometry.heads}),
         td(device_dt_bias.p, DType::FP32, {geometry.heads});
     const auto capacity = ops::gdn_norm_gating_proj_workspace_capacity_bytes(
-        geometry.heads, geometry.hidden, tokens, tokens);
+        geometry.heads, geometry.hidden, tokens, tokens, execution.tuning_sm_count);
     GuardedDeviceBuffer scratch(std::max<std::size_t>(capacity, 256));
     WorkspaceArena workspace(DeviceSpan{scratch.data(), std::max<std::size_t>(capacity, 256)});
     const auto wa = bf16_weight(device_weight.p, (geometry.parent_weight ? 2 : 1) * geometry.heads,
@@ -451,15 +451,19 @@ int run_norm_projection_case(const Geometry& geometry, std::int32_t tokens, std:
     return failures;
 }
 
+// The endpoints must span every route of the profile's own table so the interval query is
+// checked against that profile's worst point.
 int verify_workspace_capacity_contract(const Geometry& geometry,
-                                       std::initializer_list<std::int32_t> route_endpoints) {
+                                       std::initializer_list<std::int32_t> route_endpoints,
+                                       std::int32_t tuning_sm_count) {
     const std::int32_t last = *std::max_element(route_endpoints.begin(), route_endpoints.end());
-    const std::size_t interval =
-        ops::gdn_gating_proj_workspace_capacity_bytes(geometry.heads, geometry.hidden, 1, last);
+    const std::size_t interval = ops::gdn_gating_proj_workspace_capacity_bytes(
+        geometry.heads, geometry.hidden, 1, last, tuning_sm_count);
     std::size_t witness = 0;
     for (const std::int32_t tokens : route_endpoints) {
         witness = std::max(witness, ops::gdn_gating_proj_workspace_capacity_bytes(
-                                        geometry.heads, geometry.hidden, tokens, tokens));
+                                        geometry.heads, geometry.hidden, tokens, tokens,
+                                        tuning_sm_count));
     }
     int failures = 0;
     if (interval != witness) {
@@ -470,10 +474,12 @@ int verify_workspace_capacity_contract(const Geometry& geometry,
          std::vector<std::pair<int, int>>{{1, 42}, {40, 43}, {1, 128}, {120, 129}, {1, 256}}) {
         std::size_t witness = 0;
         for (int t = bounds.first; t <= bounds.second; ++t)
-            witness = std::max(witness, ops::gdn_norm_gating_proj_workspace_capacity_bytes(
-                                            geometry.heads, geometry.hidden, t, t));
+            witness = std::max(
+                witness,
+                ops::gdn_norm_gating_proj_workspace_capacity_bytes(geometry.heads, geometry.hidden,
+                                                                    t, t, tuning_sm_count));
         const auto capacity = ops::gdn_norm_gating_proj_workspace_capacity_bytes(
-            geometry.heads, geometry.hidden, bounds.first, bounds.second);
+            geometry.heads, geometry.hidden, bounds.first, bounds.second, tuning_sm_count);
         if (capacity != witness) {
             std::cerr << geometry.label << ": norm/control interval missed an extent\n";
             ++failures;
@@ -493,14 +499,26 @@ int main() {
     DeviceContext device;
     const DeviceExecutionView execution{nullptr, device.multiprocessor_count()};
     const DeviceExecutionView norm_execution{device.stream, device.multiprocessor_count()};
+    // The profile-gated 110-SM table (zero SM count keeps the default 5090 policy above).
+    const DeviceExecutionView pro_execution{
+        nullptr, device.multiprocessor_count(), GpuTuningProfile::RtxPro5000, kRtxPro5000SmCount};
     int failures = 0;
-    failures += verify_workspace_capacity_contract(kQwen27, {1, 8, 1024, 2048, 4096, 4097});
-    failures += verify_workspace_capacity_contract(kQwen35, {1, 127, 1024, 2048, 4096, 4097});
+    failures += verify_workspace_capacity_contract(kQwen27, {1, 8, 1024, 2048, 4096, 4097}, 0);
+    failures += verify_workspace_capacity_contract(
+        kQwen27, {1, 8, 1024, 1152, 1153, 2304, 2305, 2368, 2369, 4096, 4097},
+        kRtxPro5000SmCount);
+    failures += verify_workspace_capacity_contract(kQwen35, {1, 127, 1024, 2048, 4096, 4097}, 0);
 
     // Every registered 27B projection route, including predicated and full token tiles.
     for (const std::int32_t tokens : {1, 8, 9, 1024, 1025, 2049, 4097}) {
         failures += run_projection_case(kQwen27, tokens,
                                         0x1000u + static_cast<std::uint32_t>(tokens), execution);
+    }
+    // The 110-SM-measured crossovers: oracle-qualified at each new boundary under the pro policy.
+    for (const std::int32_t tokens : {1152, 1153, 2304, 2305, 2368, 2369}) {
+        failures += run_projection_case(kQwen27, tokens,
+                                        0x7000u + static_cast<std::uint32_t>(tokens),
+                                        pro_execution);
     }
     // The Qwen3.8 parent changes only the public storage boundary. One direct oracle case proves
     // its [A,B] row partition; the split 27B cases above cover every unchanged execution route.

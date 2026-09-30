@@ -310,6 +310,7 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
     const auto patches  = static_cast<std::int32_t>(patches64);
     const auto tokens   = static_cast<std::int32_t>(tokens64);
     cudaStream_t stream = ctx_.stream;
+    const DeviceExecutionView execution = ctx_.execution_view();
 
     const auto project = [&](const Tensor& x, const LinearParameters& p, Tensor& out,
                              const LayoutRegion& region) {
@@ -327,7 +328,7 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
         copy_host(control.position_ids.data(), position_ids, stream);
         copy_host(item.patches.data(), patch_bf16, stream);
         project(patch_bf16, parameters_.patch_embedding, x, layout.patch_scratch);
-        ops::add_bias(parameters_.patch_embedding_bias, x, stream);
+        ops::add_bias(parameters_.patch_embedding_bias, x, execution);
         // The artifact records the source table shape [rows,hidden], while Tensor's
         // contiguous matrix convention is [inner,columns]. The payload is already
         // row-major, so this is a zero-copy [hidden,rows] view, not a transpose.
@@ -353,7 +354,7 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
                     ops::layer_norm(x, block.norm1.weight, block.norm1.bias, 1.0e-6F, h, stream);
                     project(h, block.qkv, qkv, layout.qkv_scratch);
                 }
-                ops::add_bias(block.qkv_bias, qkv, stream);
+                ops::add_bias(block.qkv_bias, qkv, execution);
                 const std::int32_t plane      = dimension(config_.hidden_size);
                 const std::size_t plane_bytes = static_cast<std::size_t>(plane) * 2;
                 Tensor q(qkv.data, DType::BF16,
@@ -369,7 +370,7 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
                 k.nb[2] = qkv.nb[1];
                 v.nb[2] = qkv.nb[1];
                 ops::rope(position_ids, dimension(config_.hidden_size / config_.num_heads),
-                          10'000.0F, q, k, stream);
+                          10'000.0F, q, k, ctx_.execution_view());
                 Tensor attended_heads =
                     attended.view({dimension(config_.hidden_size / config_.num_heads),
                                    dimension(config_.num_heads), patches});
@@ -383,7 +384,7 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
             }
             Tensor projected = layout.projected.bind(backing);
             project(attended, block.output, projected, layout.projection_scratch);
-            ops::add_bias(block.output_bias, projected, stream);
+            ops::add_bias(block.output_bias, projected, execution);
             ops::residual_add(projected, x, stream);
         }
         {
@@ -396,10 +397,10 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
                 ops::layer_norm(x, block.norm2.weight, block.norm2.bias, 1.0e-6F, h, stream);
                 project(h, block.fc1, up, layout.up_scratch);
             }
-            ops::add_bias(block.fc1_bias, up, stream);
-            ops::gelu(up, ops::GeluMode::Tanh, stream);
+            ops::add_bias(block.fc1_bias, up, execution);
+            ops::gelu(up, ops::GeluMode::Tanh, execution);
             project(up, block.fc2, down, layout.down_scratch);
-            ops::add_bias(block.fc2_bias, down, stream);
+            ops::add_bias(block.fc2_bias, down, execution);
             ops::residual_add(down, x, stream);
         }
     }
@@ -413,10 +414,10 @@ void VisionContext::encode(const VisionItemView& item, Tensor& output, DeviceSpa
         Tensor merged = normalized.view({dimension(config_.merger_width()), tokens});
         Tensor hidden = layout.merger_hidden.bind(backing);
         project(merged, parameters_.merger_fc1, hidden, layout.merger_first_scratch);
-        ops::add_bias(parameters_.merger_fc1_bias, hidden, stream);
-        ops::gelu(hidden, ops::GeluMode::Exact, stream);
+        ops::add_bias(parameters_.merger_fc1_bias, hidden, execution);
+        ops::gelu(hidden, ops::GeluMode::Exact, execution);
         project(hidden, parameters_.merger_fc2, output, layout.merger_second_scratch);
-        ops::add_bias(parameters_.merger_fc2_bias, output, stream);
+        ops::add_bias(parameters_.merger_fc2_bias, output, execution);
     }
 }
 

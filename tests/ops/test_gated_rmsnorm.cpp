@@ -1,5 +1,6 @@
 #include "ninfer/ops/gated_rmsnorm.h"
 #include "core/device.h"
+#include "core/tuning_profile.h"
 #include "ops/norm_test_common.h"
 
 #include <cmath>
@@ -68,7 +69,13 @@ int run_case(const char* label, const Shape& shape, std::uint32_t seed, float in
     Tensor weight_tensor(device_weight.data, DType::BF16, {shape.d});
     Tensor gate_tensor   = tensor_for(device_gate.data, shape);
     Tensor output_tensor = tensor_for(output_data, shape);
-    ops::gated_rmsnorm(input_tensor, weight_tensor, gate_tensor, kEps, output_tensor, nullptr);
+    const auto execution_for = [](cudaStream_t s) {
+        return DeviceExecutionView{.stream          = s,
+                                   .tuning_profile  = GpuTuningProfile::Rtx5090,
+                                   .tuning_sm_count = kRtx5090SmCount};
+    };
+    ops::gated_rmsnorm(input_tensor, weight_tensor, gate_tensor, kEps, output_tensor,
+                       execution_for(nullptr));
     cuda_synchronize();
 
     if (graph) {
@@ -77,7 +84,8 @@ int run_case(const char* label, const Shape& shape, std::uint32_t seed, float in
         cudaGraphExec_t executable;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
-        ops::gated_rmsnorm(input_tensor, weight_tensor, gate_tensor, kEps, output_tensor, stream);
+        ops::gated_rmsnorm(input_tensor, weight_tensor, gate_tensor, kEps, output_tensor,
+                           execution_for(stream));
         CUDA_CHECK(cudaStreamEndCapture(stream, &captured));
         CUDA_CHECK(cudaGraphInstantiate(&executable, captured, nullptr, nullptr, 0));
         CUDA_CHECK(cudaGraphLaunch(executable, stream));

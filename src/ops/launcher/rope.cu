@@ -4,6 +4,7 @@
 #include "core/device.h" // CUDA_CHECK
 #include "ops/kernel/rope.cuh"
 
+#include <algorithm>
 #include <cstdint>
 
 namespace ninfer::ops::detail {
@@ -13,8 +14,9 @@ constexpr int kLargeBlock               = 256;
 constexpr int kFullChunkBlock           = 192;
 constexpr int kSmallBlock               = 128;
 constexpr int kDefaultChunkTargetTokens = 1024;
-// RTX 5090 has 170 SMs and admits six of these 256-thread CTAs per SM.
-constexpr int kLargeBlockWaveCapacity = 1020;
+// Each SM admits six of these 256-thread CTAs, so the one-wave token capacity is six times the
+// profile's wave-sizing SM count (1020 on rtx-5090, 660 on rtx-pro-5000).
+constexpr int kLargeBlockCtasPerSm = 6;
 
 template <RopeKernelMode Mode>
 inline constexpr bool kTextMode =
@@ -42,15 +44,25 @@ void launch_fixed_block(const Tensor& positions, Tensor* q, Tensor* k, int block
 }
 
 template <RopeKernelMode Mode, int QHeads, int KHeads>
-void launch_fixed(const Tensor& positions, Tensor* q, Tensor* k, cudaStream_t stream) {
-    const int tokens = positions.ne[0];
-    int block        = kSmallBlock;
+void launch_fixed(const Tensor& positions, Tensor* q, Tensor* k, int tuning_sm_count,
+                  cudaStream_t stream) {
+    const int tokens                    = positions.ne[0];
+    const int large_block_wave_capacity = kLargeBlockCtasPerSm * tuning_sm_count;
+    // Measured on the 110-SM part (2026-09-29): the 192-thread CTA admits eight per SM, so its
+    // one-wave capacity is eight times the SM count; past that point the 128-thread block's wider
+    // residency wins -17..-20% over the 192-thread second wave (3.25 vs 3.90 us at T=881). On the
+    // 170-SM part 8*SMs > 1024, so the full-chunk range keeps its 1024 end there.
+    const int full_chunk_end =
+        (tuning_sm_count > 0 && tuning_sm_count < 170)
+            ? std::min(kDefaultChunkTargetTokens, 8 * tuning_sm_count)
+            : kDefaultChunkTargetTokens;
+    int block                = kSmallBlock;
     if constexpr (kTextMode<Mode>) {
         if (tokens <= 6) {
             block = (QHeads + KHeads) * 32;
-        } else if (tokens <= kLargeBlockWaveCapacity) {
+        } else if (tokens <= large_block_wave_capacity) {
             block = kLargeBlock;
-        } else if (tokens <= kDefaultChunkTargetTokens) {
+        } else if (tokens <= full_chunk_end) {
             block = kFullChunkBlock;
         }
         const int head_warps = (QHeads + KHeads) * 32;
@@ -74,7 +86,7 @@ void launch_dflash_split(const Tensor& positions, Tensor* q, Tensor* k, cudaStre
 }
 
 bool launch_fixed_pair(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
-                       cudaStream_t stream) {
+                       int tuning_sm_count, cudaStream_t stream) {
     if (!bf16x2_aligned(q) || !bf16x2_aligned(k)) { return false; }
     const int axes = positions.ne[1];
     if (axes == 1 && q.ne[0] == 128 && rotary_dim == 128 && theta == 1.0e7F && q.ne[1] == 32 &&
@@ -92,75 +104,83 @@ bool launch_fixed_pair(const Tensor& positions, int rotary_dim, float theta, Ten
     if (rotary_dim == 64 && theta == 1.0e7F) {
         if (q.ne[1] == 24 && k.ne[1] == 4) {
             if (axes == 1) {
-                launch_fixed<RopeKernelMode::Text1D, 24, 4>(positions, &q, &k, stream);
+                launch_fixed<RopeKernelMode::Text1D, 24, 4>(positions, &q, &k, tuning_sm_count, stream);
                 return true;
             }
             if (axes == 3) {
-                launch_fixed<RopeKernelMode::TextMrope, 24, 4>(positions, &q, &k, stream);
+                launch_fixed<RopeKernelMode::TextMrope, 24, 4>(positions, &q, &k, tuning_sm_count, stream);
                 return true;
             }
         }
         if (q.ne[1] == 16 && k.ne[1] == 2) {
             if (axes == 1) {
-                launch_fixed<RopeKernelMode::Text1D, 16, 2>(positions, &q, &k, stream);
+                launch_fixed<RopeKernelMode::Text1D, 16, 2>(positions, &q, &k, tuning_sm_count, stream);
                 return true;
             }
             if (axes == 3) {
-                launch_fixed<RopeKernelMode::TextMrope, 16, 2>(positions, &q, &k, stream);
+                launch_fixed<RopeKernelMode::TextMrope, 16, 2>(positions, &q, &k, tuning_sm_count, stream);
                 return true;
             }
         }
     }
     if (axes == 2 && rotary_dim == 72 && theta == 10'000.0F && q.ne[1] == 16 && k.ne[1] == 16) {
-        launch_fixed<RopeKernelMode::Vision2D, 16, 16>(positions, &q, &k, stream);
+        launch_fixed<RopeKernelMode::Vision2D, 16, 16>(positions, &q, &k, tuning_sm_count, stream);
         return true;
     }
     return false;
 }
 
 template <RopeKernelMode Mode, int Heads>
-void launch_fixed_single(const Tensor& positions, Tensor& x, cudaStream_t stream) {
-    launch_fixed<Mode, Heads, 0>(positions, &x, nullptr, stream);
+void launch_fixed_single(const Tensor& positions, Tensor& x, int tuning_sm_count,
+                         cudaStream_t stream) {
+    launch_fixed<Mode, Heads, 0>(positions, &x, nullptr, tuning_sm_count, stream);
 }
 
 template <int Heads>
-bool launch_text_single(const Tensor& positions, int axes, Tensor& x, cudaStream_t stream) {
+bool launch_text_single(const Tensor& positions, int axes, Tensor& x, int tuning_sm_count,
+                        cudaStream_t stream) {
     if (x.ne[1] != Heads) { return false; }
     if (axes == 1) {
-        launch_fixed_single<RopeKernelMode::Text1D, Heads>(positions, x, stream);
+        launch_fixed_single<RopeKernelMode::Text1D, Heads>(positions, x,
+                                                           tuning_sm_count, stream);
         return true;
     }
     if (axes == 3) {
-        launch_fixed_single<RopeKernelMode::TextMrope, Heads>(positions, x, stream);
+        launch_fixed_single<RopeKernelMode::TextMrope, Heads>(positions, x,
+                                                               tuning_sm_count, stream);
         return true;
     }
     return false;
 }
 
 bool launch_fixed_single_dispatch(const Tensor& positions, int rotary_dim, float theta, Tensor& x,
-                                  cudaStream_t stream) {
+                                  int tuning_sm_count, cudaStream_t stream) {
     if (!bf16x2_aligned(x)) { return false; }
     const int axes = positions.ne[1];
     if (axes == 1 && x.ne[0] == 128 && rotary_dim == 128 && theta == 1.0e7F) {
         if (x.ne[1] == 32) {
-            launch_fixed_single<RopeKernelMode::DflashText1D, 32>(positions, x, stream);
+            launch_fixed_single<RopeKernelMode::DflashText1D, 32>(positions, x,
+                                                                   tuning_sm_count,
+                                                                   stream);
             return true;
         }
         if (x.ne[1] == 8) {
-            launch_fixed_single<RopeKernelMode::DflashText1D, 8>(positions, x, stream);
+            launch_fixed_single<RopeKernelMode::DflashText1D, 8>(positions, x,
+                                                                  tuning_sm_count, stream);
             return true;
         }
     }
     if (rotary_dim == 64 && theta == 1.0e7F) {
-        if (launch_text_single<24>(positions, axes, x, stream) ||
-            launch_text_single<4>(positions, axes, x, stream) ||
-            launch_text_single<16>(positions, axes, x, stream) ||
-            launch_text_single<2>(positions, axes, x, stream)) {
+        if (launch_text_single<24>(positions, axes, x, tuning_sm_count, stream) ||
+            launch_text_single<4>(positions, axes, x, tuning_sm_count, stream) ||
+            launch_text_single<16>(positions, axes, x, tuning_sm_count, stream) ||
+            launch_text_single<2>(positions, axes, x, tuning_sm_count, stream)) {
             return true;
         }
     }
     if (axes == 2 && rotary_dim == 72 && theta == 10'000.0F && x.ne[1] == 16) {
-        launch_fixed_single<RopeKernelMode::Vision2D, 16>(positions, x, stream);
+        launch_fixed_single<RopeKernelMode::Vision2D, 16>(positions, x, tuning_sm_count,
+                                                          stream);
         return true;
     }
     return false;
@@ -182,16 +202,19 @@ void launch_generic(const Tensor& positions, int rotary_dim, float theta, Tensor
 } // namespace
 
 void rope_launch(const Tensor& positions, int rotary_dim, float theta, Tensor& q, Tensor& k,
-                 cudaStream_t stream) {
-    if (!launch_fixed_pair(positions, rotary_dim, theta, q, k, stream)) {
+                 DeviceExecutionView execution) {
+    const cudaStream_t stream = execution.stream;
+    if (!launch_fixed_pair(positions, rotary_dim, theta, q, k, execution.tuning_sm_count, stream)) {
         launch_generic(positions, rotary_dim, theta, &q, &k, stream);
     }
     CUDA_CHECK(cudaGetLastError());
 }
 
 void rope_single_launch(const Tensor& positions, int rotary_dim, float theta, Tensor& x,
-                        cudaStream_t stream) {
-    if (!launch_fixed_single_dispatch(positions, rotary_dim, theta, x, stream)) {
+                        DeviceExecutionView execution) {
+    const cudaStream_t stream = execution.stream;
+    if (!launch_fixed_single_dispatch(positions, rotary_dim, theta, x, execution.tuning_sm_count,
+                                       stream)) {
         launch_generic(positions, rotary_dim, theta, &x, nullptr, stream);
     }
     CUDA_CHECK(cudaGetLastError());

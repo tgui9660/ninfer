@@ -348,6 +348,23 @@ int main() {
     failures += check(!secret_present, "startup argv retained the API key");
     failures += check(redaction_present, "startup argv omitted the API-key redaction marker");
 
+    failures += check(defaults.tuning_profile == ninfer::GpuTuningProfile::Auto,
+                      "tuning profile is not auto by default");
+    const ServeOptions tuned =
+        parse({"ninfer-serve", "model.ninfer", "--tuning-profile", "rtx-pro-5000"});
+    failures += check(tuned.tuning_profile == ninfer::GpuTuningProfile::RtxPro5000,
+                      "--tuning-profile did not select the RTX PRO 5000 tuning set");
+    failures += check(
+        serve_usage_text("ninfer-serve").find("--tuning-profile") != std::string::npos,
+        "serve help omits --tuning-profile");
+    bool bad_tuning_profile_rejected = false;
+    try {
+        (void)parse({"ninfer-serve", "model.ninfer", "--tuning-profile", "banana"});
+    } catch (const std::invalid_argument&) {
+        bad_tuning_profile_rejected = true;
+    }
+    failures += check(bad_tuning_profile_rejected, "serve accepted an unknown tuning profile");
+
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }

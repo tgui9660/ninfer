@@ -766,6 +766,7 @@ The table lists executable defaults. The startup example selects a long-context 
 | `--log-stats-interval-ms N` | aggregate throughput report interval; `0` disables it | `5000` |
 | `--log-level trace\|debug\|info\|warning\|error\|critical\|off` | pretty stderr verbosity | `info` |
 | `--device N` | CUDA device index | `0` |
+| `--tuning-profile auto\|rtx-5090\|rtx-pro-5000` | launch-policy tuning set; `auto` resolves it from the detected GPU; an explicit selection for a different part logs a startup warning | `auto` |
 | `--context-cost-presets FILE` | optional runtime context-cost preset registry | generic + compiled defaults |
 | `--max-request-mib N` | body-size limit before JSON parsing | `384` |
 | `--media-cache-mib N` | LRU-retained prepared BF16 media payloads; `0` disables retention | `1024` |

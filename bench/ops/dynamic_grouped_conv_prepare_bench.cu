@@ -1,3 +1,5 @@
+#include "core/device.h"
+#include "core/tuning_profile.h"
 #include "core/weight.h"
 #include "ninfer/ops/dynamic_grouped_conv.h"
 
@@ -34,7 +36,13 @@ struct Options {
     int warmup              = 8;
     int repeat              = 40;
     std::size_t flush_bytes = kDefaultFlushBytes;
+    GpuTuningProfile tuning_profile = GpuTuningProfile::Auto;
 };
+
+// Resolved in main() before any measurement; run_batch embeds the result in its execution view so
+// the fused rmsnorm gate runs under the selected profile's wave-sizing SM count.
+GpuTuningProfile resolved_tuning_profile = GpuTuningProfile::Auto;
+std::int32_t resolved_tuning_sm_count    = 0;
 
 Options parse_args(int argc, char** argv) {
     Options options;
@@ -56,9 +64,16 @@ Options parse_args(int argc, char** argv) {
             const long mib = std::strtol(next("flush MiB"), nullptr, 10);
             if (mib <= 0) { throw std::invalid_argument("flush MiB must be positive"); }
             options.flush_bytes = static_cast<std::size_t>(mib) << 20;
+        } else if (!std::strcmp(argv[index], "--tuning-profile")) {
+            const auto parsed = parse_tuning_profile(next("tuning profile"));
+            if (!parsed) {
+                throw std::invalid_argument("--tuning-profile must be auto, rtx-5090, or rtx-pro-5000");
+            }
+            options.tuning_profile = *parsed;
         } else if (!std::strcmp(argv[index], "--help") || !std::strcmp(argv[index], "-h")) {
             std::printf(
-                "usage: %s [--width W] [--batch B] [--warmup N] [--repeat N] [--flush-mib N]\n",
+                "usage: %s [--width W] [--batch B] [--warmup N] [--repeat N] [--flush-mib N] "
+                "[--tuning-profile auto|rtx-5090|rtx-pro-5000]\n",
                 argv[0]);
             std::exit(0);
         } else {
@@ -83,9 +98,12 @@ void run_batch(int width, std::int32_t batch_size, const Options& options,
     Tensor finish_delta(finish_storage.p, DType::BF16, {kGroups, kTaps, width, batch_size});
     const auto launch = [&](cudaStream_t launch_stream) {
         workspace.reset();
+        const DeviceExecutionView view{.stream          = launch_stream,
+                                       .tuning_profile  = resolved_tuning_profile,
+                                       .tuning_sm_count = resolved_tuning_sm_count};
         ops::rmsnorm_dynamic_grouped_conv_prepare(residual, norm_weight, 1.0e-6F, base_kernel,
                                                   projection_weight, prepared, finish_delta,
-                                                  workspace, launch_stream);
+                                                  workspace, view);
     };
     workspace.reset_peak();
     TimedGraph graph;
@@ -111,6 +129,12 @@ int main(int argc, char** argv) {
     }
     try {
         const Options options = parse_args(argc, argv);
+        cudaDeviceProp prop{};
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, 0));
+        const auto tuning = resolve_tuning_profile(
+            options.tuning_profile, prop.major * 10 + prop.minor, prop.multiProcessorCount);
+        resolved_tuning_profile = tuning.concrete;
+        resolved_tuning_sm_count = tuning.tuning_sm_count;
         DeviceBuffer residual =
             make_bf16(static_cast<std::size_t>(kHidden) * kMaximumWidth * 8, 101U);
         DeviceBuffer norm = make_bf16(kHidden, 103U, .8F, 1.2F);
@@ -129,6 +153,8 @@ int main(int argc, char** argv) {
 
         cudaStream_t stream = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+        std::printf("# tuning_profile=%s wave_sm_count=%d\n",
+                    tuning_profile_name(tuning.concrete), tuning.tuning_sm_count);
         std::printf("W,B,T,median_us,min_us,p95_us,effective_projection_tflops,workspace_bytes,"
                     "graph_nodes\n");
         for (int width = 2; width <= 16; ++width) {

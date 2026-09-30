@@ -13,18 +13,24 @@
 namespace ninfer::ops {
 
 // The geometry is the fixed implementation profile. Each query covers every T in the inclusive
-// interval; invalid profiles or intervals throw.
+// interval; invalid profiles or intervals throw. `tuning_sm_count` selects the launch-policy
+// table exactly as execution does (the resolved profile's wave-sizing SM count; zero queries the
+// default 5090 policy), so the reported capacity is the exact high-water of an execution under
+// that policy.
 [[nodiscard]] std::size_t gdn_gating_proj_workspace_capacity_bytes(std::int32_t heads,
                                                                    std::int32_t input_rows,
                                                                    std::int32_t min_tokens,
-                                                                   std::int32_t max_tokens);
+                                                                   std::int32_t max_tokens,
+                                                                   std::int32_t tuning_sm_count);
 
 // Transient capacity for the corresponding pre-normalized control Op. The query follows the same
-// interval rules and does not make the optimized route part of the semantic API.
+// interval and tuning-profile rules and does not make the optimized route part of the semantic
+// API.
 [[nodiscard]] std::size_t gdn_norm_gating_proj_workspace_capacity_bytes(std::int32_t heads,
-                                                                        std::int32_t input_rows,
-                                                                        std::int32_t min_tokens,
-                                                                        std::int32_t max_tokens);
+                                                                         std::int32_t input_rows,
+                                                                         std::int32_t min_tokens,
+                                                                         std::int32_t max_tokens,
+                                                                         std::int32_t tuning_sm_count);
 
 /**
  * Fuses two BF16 projections with Gated DeltaNet gate preparation. For each h,t:

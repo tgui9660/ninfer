@@ -34,7 +34,7 @@
 namespace {
 
 constexpr int kThreads                 = 256;
-constexpr double kDefaultPeakGBps      = 1792.0;
+constexpr double kDefaultPeakGBps      = 1344.0; // RTX PRO 5000 Blackwell GDDR7 spec.
 constexpr double kDefaultTrialSeconds  = 0.25;
 constexpr int kDefaultTrials           = 5;
 constexpr std::size_t kDefaultMaxBytes = std::size_t{4} << 30;

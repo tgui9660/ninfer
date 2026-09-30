@@ -10,17 +10,19 @@
 
 namespace ninfer::ops::detail {
 
-void add_bias_launch(const Tensor& bias, Tensor& x, cudaStream_t stream) {
+void add_bias_launch(const Tensor& bias, Tensor& x, DeviceExecutionView execution) {
     constexpr int block        = 256;
     constexpr int rowsPerBlock = 4;
     constexpr std::int64_t maxVectorRows =
         rowsPerBlock * std::numeric_limits<unsigned short>::max();
-    const std::int64_t n    = x.numel();
-    const std::int64_t rows = n / x.ne[0];
+    const std::int64_t n          = x.numel();
+    const std::int64_t rows       = n / x.ne[0];
+    const std::int64_t x8_max     = bf16x8_cache_sized_max_elements(execution.tuning_sm_count);
+    const cudaStream_t stream     = execution.stream;
     const auto addresses =
         reinterpret_cast<std::uintptr_t>(bias.data) | reinterpret_cast<std::uintptr_t>(x.data);
-    if ((x.ne[0] % 8) == 0 && (addresses & (alignof(Bf16x8Pack) - 1)) == 0 &&
-        n <= kBf16x8CacheSizedMaxElements && rows <= maxVectorRows) {
+    if ((x.ne[0] % 8) == 0 && (addresses & (alignof(Bf16x8Pack) - 1)) == 0 && n <= x8_max &&
+        rows <= maxVectorRows) {
         const std::int32_t packs = x.ne[0] / 8;
         const unsigned grid_x    = static_cast<unsigned>(div_up(packs, block));
         if (rows >= 1024) {

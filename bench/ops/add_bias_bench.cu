@@ -1,3 +1,4 @@
+#include "core/tuning_profile.h"
 #include "ninfer/ops/add_bias.h"
 #include "ninfer_bench_common.h"
 #include "ops/common/bf16_vector.cuh"
@@ -52,6 +53,19 @@ __global__ void add_bias_pair_payload_control(const unsigned int* bias, unsigned
     }
 }
 
+// Pack-width forcing for the control legs: 0 = production boundary, 1 = Bf16x8 (uint4) streams
+// (the higher-occupancy row variant when columns >= 1024, mirroring the launcher), 2 = Bf16x2
+// (pair) streams.
+int force_pack          = 0;
+int g_tuning_sm_count   = 0;
+GpuTuningProfile g_profile = GpuTuningProfile::Rtx5090;
+
+bool use_x8_control(std::int64_t n) {
+    if (force_pack == 1) { return true; }
+    if (force_pack == 2) { return false; }
+    return n <= ops::bf16x8_cache_sized_max_elements(g_tuning_sm_count);
+}
+
 void run(int d, int columns, bool control) {
     const std::size_t n = static_cast<std::size_t>(d) * static_cast<std::size_t>(columns);
     DeviceBuffer x      = make_bf16(n, 101U);
@@ -68,8 +82,7 @@ void run(int d, int columns, bool control) {
                 constexpr int block   = 256;
                 const int packs       = d / 8;
                 const unsigned grid_x = static_cast<unsigned>((packs + block - 1) / block);
-                if (static_cast<std::int64_t>(n) <= ops::kBf16x8CacheSizedMaxElements &&
-                    columns >= 1024) {
+                if (use_x8_control(static_cast<std::int64_t>(n)) && columns >= 1024) {
                     constexpr int rowsPerBlock = 4;
                     const unsigned grid_y =
                         static_cast<unsigned>((columns + rowsPerBlock - 1) / rowsPerBlock);
@@ -77,7 +90,7 @@ void run(int d, int columns, bool control) {
                         <<<dim3(grid_x, grid_y), block, 0, stream>>>(
                             static_cast<const uint4*>(bias.p), static_cast<uint4*>(x.p), packs,
                             columns);
-                } else if (static_cast<std::int64_t>(n) <= ops::kBf16x8CacheSizedMaxElements) {
+                } else if (use_x8_control(static_cast<std::int64_t>(n))) {
                     add_bias_payload_control<1><<<dim3(grid_x, columns), block, 0, stream>>>(
                         static_cast<const uint4*>(bias.p), static_cast<uint4*>(x.p), packs,
                         columns);
@@ -93,13 +106,19 @@ void run(int d, int columns, bool control) {
                             static_cast<unsigned int*>(x.p), pairs, columns);
                 }
             } else {
-                ops::add_bias(tb, tx, stream);
+                const DeviceExecutionView execution{.stream          = stream,
+                                                    .tuning_profile  = g_profile,
+                                                    .tuning_sm_count = g_tuning_sm_count};
+                ops::add_bias(tb, tx, execution);
             }
         },
         static_cast<double>(n) * 4.0);
 
     char tag[80];
-    std::snprintf(tag, sizeof(tag), "%s [%d,%-5d]", control ? "control" : "add_bias", d, columns);
+    const char* pack_tag =
+        (control && force_pack == 1) ? "-x8" : ((control && force_pack == 2) ? "-x2" : "");
+    std::snprintf(tag, sizeof(tag), "%s%s [%d,%-5d]", control ? "control" : "add_bias", pack_tag,
+                  d, columns);
     print_result(tag, result);
 }
 
@@ -126,6 +145,7 @@ int main(int argc, char** argv) {
     int selected_d       = 0;
     int selected_columns = 0;
     bool control         = false;
+    GpuTuningProfile requested = GpuTuningProfile::Auto;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--d") && i + 1 < argc) {
             selected_d = std::atoi(argv[++i]);
@@ -133,11 +153,44 @@ int main(int argc, char** argv) {
             selected_columns = std::atoi(argv[++i]);
         } else if (!std::strcmp(argv[i], "--control")) {
             control = true;
+        } else if (!std::strcmp(argv[i], "--force-pack") && i + 1 < argc) {
+            const char* pack = argv[++i];
+            if (!std::strcmp(pack, "auto")) {
+                force_pack = 0;
+            } else if (!std::strcmp(pack, "x8")) {
+                force_pack = 1;
+            } else if (!std::strcmp(pack, "x2")) {
+                force_pack = 2;
+            } else {
+                std::fprintf(stderr, "force-pack must be auto, x8, or x2\n");
+                return 2;
+            }
+        } else if (!std::strcmp(argv[i], "--tuning-profile") && i + 1 < argc) {
+            const auto parsed = parse_tuning_profile(argv[++i]);
+            if (!parsed) {
+                std::fprintf(stderr, "tuning-profile must be auto, rtx-5090, or rtx-pro-5000\n");
+                return 2;
+            }
+            requested = *parsed;
         } else {
-            std::fprintf(stderr, "usage: %s [--d D --columns C] [--control]\n", argv[0]);
+            std::fprintf(stderr,
+                         "usage: %s [--d D --columns C] [--control] [--force-pack auto|x8|x2] "
+                         "[--tuning-profile auto|rtx-5090|rtx-pro-5000]\n",
+                         argv[0]);
             return 2;
         }
     }
+    int compute_capability   = 0;
+    int multiprocessor_count = 0;
+    cudaDeviceProp prop{};
+    if (cudaGetDeviceProperties(&prop, 0) == cudaSuccess) {
+        compute_capability   = prop.major * 10 + prop.minor;
+        multiprocessor_count = prop.multiProcessorCount;
+    }
+    const auto tuning =
+        resolve_tuning_profile(requested, compute_capability, multiprocessor_count);
+    g_profile         = tuning.concrete;
+    g_tuning_sm_count = tuning.tuning_sm_count;
     if ((selected_d == 0) != (selected_columns == 0) || selected_d < 0 || selected_columns < 0 ||
         (selected_d > 0 && selected_d % 8 != 0)) {
         std::fprintf(stderr, "d and columns must be supplied together; d must be divisible by 8\n");

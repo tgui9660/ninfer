@@ -106,6 +106,10 @@ public:
 
     [[nodiscard]] ninfer::MemorySummary memory_summary() const { return engine_->memory_summary(); }
 
+    [[nodiscard]] ninfer::TuningSummary tuning_summary() const {
+        return engine_->tuning_summary();
+    }
+
     [[nodiscard]] ninfer::RuntimeStats runtime_stats() const { return engine_->runtime_stats(); }
 
     [[nodiscard]] bool is_available() const { return engine_->is_available(); }

@@ -2,6 +2,8 @@
 
 #include <cuda_runtime.h>
 
+#include "ninfer/types.h"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -12,10 +14,14 @@ void cuda_check(cudaError_t err, const char* expr, const char* file, int line);
 #define CUDA_CHECK(expr) ::ninfer::cuda_check((expr), #expr, __FILE__, __LINE__)
 
 // Non-owning execution facts passed to Ops whose launch policy depends on physical device
-// capacity. DeviceContext remains the owner and authoritative source of both values.
+// capacity. DeviceContext remains the owner and authoritative source of all values.
 struct DeviceExecutionView {
     cudaStream_t stream               = nullptr;
     std::int32_t multiprocessor_count = 0;
+    // Resolved launch-policy tuning set and its effective wave-sizing SM count. The runtime
+    // multiprocessor_count above remains the authoritative physical fact.
+    GpuTuningProfile tuning_profile   = GpuTuningProfile::Rtx5090;
+    std::int32_t tuning_sm_count      = 0;
 };
 
 struct DeviceContext {
@@ -23,6 +29,10 @@ struct DeviceContext {
     cudaStream_t stream          = nullptr;
     cudaStream_t transfer_stream = nullptr;
     cudaDeviceProp props{};
+    // Startup-resolved tuning selection; applied by the runtime after resolution.
+    GpuTuningProfile tuning_profile_ = GpuTuningProfile::Rtx5090;
+    int tuning_sm_count_             = 0;
+    bool tuning_foreign_             = false;
 
     explicit DeviceContext(int device_id = 0);
     ~DeviceContext();
@@ -36,6 +46,11 @@ struct DeviceContext {
     void bind_to_current_thread_noexcept() const noexcept;
     int compute_capability() const noexcept;
     int multiprocessor_count() const noexcept;
+    void apply_tuning_resolution(GpuTuningProfile profile, int tuning_sm_count,
+                                 bool foreign) noexcept;
+    GpuTuningProfile tuning_profile() const noexcept;
+    int tuning_sm_count() const noexcept;
+    bool tuning_foreign() const noexcept;
     DeviceExecutionView execution_view() const noexcept;
     std::size_t total_vram() const noexcept;
     const char* sync_mode() const;

@@ -264,7 +264,7 @@ void validate_batched_attention_tensors(const Tensor& q, const Tensor& positions
 std::size_t causal_softmax_attention_workspace_capacity_bytes(
     AttentionHeadGeometry geometry, KvCacheStorage cache_storage,
     CausalAttentionExecutionEnvelope envelope, std::int32_t batch_size, std::int32_t min_width,
-    std::int32_t max_width) {
+    std::int32_t max_width, std::int32_t tuning_sm_count) {
     require_causal_geometry(geometry, "causal_softmax_attention workspace");
     const std::int32_t q_heads = geometry.query_heads;
     bool supported_dtype       = true;
@@ -274,7 +274,8 @@ std::size_t causal_softmax_attention_workspace_capacity_bytes(
     if (!supported_dtype || batch_size <= 0 || batch_size > kMaximumBatchSize || min_width <= 0 ||
         max_width < min_width || (batch_size > 1 && max_width > kMaximumVerifyTokens) ||
         envelope.min_visible_keys == 0 || envelope.min_visible_keys > envelope.max_visible_keys ||
-        envelope.max_visible_keys > kCausalAttentionMaximumVisibleKeys) {
+        envelope.max_visible_keys > kCausalAttentionMaximumVisibleKeys ||
+        tuning_sm_count <= 0) {
         throw std::invalid_argument(
             "causal_softmax_attention workspace: invalid profile or interval");
     }
@@ -300,8 +301,13 @@ void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
                               const Tensor& kv_table_rows, AttentionHeadGeometry geometry,
                               float scale, PagedKVBatchLayerView cache,
                               CausalAttentionExecutionEnvelope envelope, WorkspaceArena& workspace,
-                              Tensor& out, cudaStream_t stream) {
+                              Tensor& out, DeviceExecutionView execution) {
     constexpr const char* op = "causal_softmax_attention";
+    if (execution.tuning_sm_count <= 0) {
+        throw std::invalid_argument(
+            "causal_softmax_attention: execution tuning SM count must be positive");
+    }
+    const cudaStream_t stream = execution.stream;
     validate_batched_attention_tensors(q, positions, valid_columns, kv_table_rows, out, cache,
                                        geometry, envelope, scale, op);
     if (k.dtype != DType::BF16 || v.dtype != DType::BF16) {
@@ -347,8 +353,14 @@ void causal_softmax_attention_cached(const Tensor& q, const Tensor& positions,
                                      AttentionHeadGeometry geometry, float scale,
                                      const PagedKVLayerView& cache,
                                      CausalAttentionExecutionEnvelope envelope,
-                                     WorkspaceArena& workspace, Tensor& out, cudaStream_t stream) {
+                                     WorkspaceArena& workspace, Tensor& out,
+                                     DeviceExecutionView execution) {
     constexpr const char* op = "causal_softmax_attention_cached";
+    if (execution.tuning_sm_count <= 0) {
+        throw std::invalid_argument(
+            "causal_softmax_attention_cached: execution tuning SM count must be positive");
+    }
+    const cudaStream_t stream = execution.stream;
     validate_attention_tensors(q, positions, out, geometry, cache, envelope, scale, op);
 
     if (cache.storage == KvCacheStorage::BFloat16) {

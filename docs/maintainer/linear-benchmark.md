@@ -328,8 +328,8 @@ format weight bytes 是 kernel 需要消费的各存储平面之和，不包含 
 ```text
 model_bytes = weight_bytes + 2*K*T + 2*N*T
 effective_GB/s = model_bytes / seconds / 1e9
-dram_spec_pct = effective_GB/s / 1792 * 100
-read_ceiling_pct = effective_GB/s / 1674.5 * 100
+dram_spec_pct = effective_GB/s / 1344 * 100
+read_ceiling_pct = effective_GB/s / 1237.4 * 100
 ```
 
 这是从 public representation 得到的 model floor，不是 profiler 观测的 physical DRAM
@@ -343,11 +343,13 @@ traffic。它不计：
 这些问题需要 NCU 回答。benchmark 不再根据 launcher column tile 推导
 `weight_replay_lower_bound_bytes`。
 
-`1792 GB/s` 仍是固定硬件规格，用于原有 `DRAM_%` 和 fixed-spec roofline。附加的
-`READ_%` 使用 RTX 5090 上 `tools/hbm_bandwidth_probe.cu` 的 4 GiB `uint4` 纯读结果
-`1674.5 GB/s`，表示该机器已经实测可持续的只读上限。它只为读主导 Linear 提供实际
-可达利用率，不替换 fixed-spec 指标，也不改变一遍 logical weight read 的
-`model_bytes` 口径。copy probe 同时读写，不是这类 GEMV 的适用上限。
+`1344 GB/s` 是 RTX PRO 5000 Blackwell 的固定硬件规格（GDDR7），用于原有 `DRAM_%`
+和 fixed-spec roofline（历史 RTX 5090 规格为 `1792 GB/s`）。附加的
+`READ_%` 使用本机 `tools/hbm_bandwidth_probe.cu` 的 4 GiB `uint4` 纯读实测结果
+`1237.4 GB/s`（历史 RTX 5090：`1674.5 GB/s`），表示该机器已经实测可持续的只读上限。
+它只为读主导 Linear 提供实际可达利用率，不替换 fixed-spec 指标，也不改变一遍
+logical weight read 的 `model_bytes` 口径。copy probe 同时读写，不是这类 GEMV 的
+适用上限。
 
 ## 5. 数学工作量与 route-neutral 指标
 
@@ -368,7 +370,7 @@ MMA 路径的点才输出 `tensor_profile`、`tensor_peak_tflops` 和 `tensor_pe
 这些字段不能仅从 activation policy 推断：
 
 ```text
-memory_floor_us = model_bytes / 1792 GB/s
+memory_floor_us = model_bytes / 1344 GB/s
 memory_floor_pct = memory_floor_us / median_us
 ```
 
@@ -389,13 +391,14 @@ memory_floor_pct = memory_floor_us / median_us
 
 ## 7. 输出
 
-console header 固定打印：
+console header 固定打印（denominator 为 RTX PRO 5000 Blackwell；历史 RTX 5090 为
+`1792 / 1674.5 GB/s`、FP8 `838/419`、BF16 `209.5 TFLOP/s`）：
 
 ```text
-gpu=RTX 5090
-dram_spec=1792 GB/s
-sustained_read=1674.5 GB/s
-cache=cold
+# actual_gpu=NVIDIA RTX PRO 5000 Blackwell sm=120 reference_gpu=RTX_PRO_5000
+# dram_spec_gbs=1344.0 sustained_read_gbs=1237.4 cache=cold
+# dense_fp8_tensor_tflops fp16_acc=697.6 fp32_acc=348.8
+# dense_bf16_tensor_tflops fp32_acc=174.4
 ```
 
 单行结果保留：

@@ -30,9 +30,9 @@ namespace {
 
 constexpr std::int32_t kRows               = 5120;
 constexpr std::int32_t kHidden             = 6144;
-constexpr double kRtx5090DramGBs           = 1792.0;
-constexpr double kRtx5090SustainedReadGBs  = 1674.5;
-constexpr double kRtx5090DenseBf16Tflops   = 209.5;
+constexpr double kRtxPro5000DramGBs           = 1344.0;
+constexpr double kRtxPro5000SustainedReadGBs  = 1237.4;
+constexpr double kRtxPro5000DenseBf16Tflops   = 174.4;
 constexpr std::uint64_t kDefaultFlushBytes = 256ULL << 20;
 constexpr int kDefaultWarmup               = 3;
 constexpr int kDefaultRepeat               = 20;
@@ -232,8 +232,8 @@ Result make_result(std::string route, std::int32_t tokens, const bench::ColdTimi
         2.0 * static_cast<double>(kRows) * static_cast<double>(kHidden) * tokens;
     const double seconds = timing.median_us * 1.0e-6;
     const double memory_floor_us =
-        static_cast<double>(logical_bytes) / (kRtx5090DramGBs * 1.0e9) * 1.0e6;
-    const double compute_floor_us  = useful_flops / (kRtx5090DenseBf16Tflops * 1.0e12) * 1.0e6;
+        static_cast<double>(logical_bytes) / (kRtxPro5000DramGBs * 1.0e9) * 1.0e6;
+    const double compute_floor_us  = useful_flops / (kRtxPro5000DenseBf16Tflops * 1.0e12) * 1.0e6;
     const double roofline_floor_us = std::max(memory_floor_us, compute_floor_us);
 
     return {
@@ -243,9 +243,9 @@ Result make_result(std::string route, std::int32_t tokens, const bench::ColdTimi
         logical_bytes,
         useful_flops,
         static_cast<double>(logical_bytes) / seconds / 1.0e9,
-        (static_cast<double>(logical_bytes) / seconds / 1.0e9) / kRtx5090SustainedReadGBs * 100.0,
+        (static_cast<double>(logical_bytes) / seconds / 1.0e9) / kRtxPro5000SustainedReadGBs * 100.0,
         useful_flops / seconds / 1.0e12,
-        (useful_flops / seconds / 1.0e12) / kRtx5090DenseBf16Tflops * 100.0,
+        (useful_flops / seconds / 1.0e12) / kRtxPro5000DenseBf16Tflops * 100.0,
         memory_floor_us,
         compute_floor_us,
         roofline_floor_us / timing.median_us * 100.0,

@@ -10,13 +10,14 @@
 
 namespace ninfer::ops::detail {
 
-void gelu_launch(Tensor& x, GeluMode mode, cudaStream_t stream) {
+void gelu_launch(Tensor& x, GeluMode mode, DeviceExecutionView execution) {
     constexpr int block   = 256;
     constexpr int maxGrid = 16384;
-    const std::int64_t n  = x.numel();
-    const auto address    = reinterpret_cast<std::uintptr_t>(x.data);
-    if ((address & (alignof(Bf16x8Pack) - 1)) == 0 && (n % 8) == 0 &&
-        n <= kBf16x8CacheSizedMaxElements) {
+    const std::int64_t n      = x.numel();
+    const std::int64_t x8_max = bf16x8_cache_sized_max_elements(execution.tuning_sm_count);
+    const cudaStream_t stream = execution.stream;
+    const auto address        = reinterpret_cast<std::uintptr_t>(x.data);
+    if ((address & (alignof(Bf16x8Pack) - 1)) == 0 && (n % 8) == 0 && n <= x8_max) {
         const std::int64_t packs = n / 8;
         const int grid           = static_cast<int>(std::min<std::int64_t>(
             maxGrid, std::max<std::int64_t>(1, div_up(packs, static_cast<std::int64_t>(block)))));

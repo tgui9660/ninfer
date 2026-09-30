@@ -82,6 +82,8 @@ struct SequencePlanningInputs {
     bool use_cuda_graph = true;
     bool causal_scoring = false;
     int device          = 0;
+    // Resolved profile's wave-sizing SM count; Op capacity queries must match the launch policy.
+    std::int32_t tuning_sm_count = 0;
     ContextCacheOptions context_cache;
 };
 
@@ -104,6 +106,7 @@ struct SequencePlanImpl {
     bool use_cuda_graph = true;
     bool causal_scoring = false;
     int device          = 0;
+    std::int32_t tuning_sm_count = 0;
     ContextCacheOptions context_cache;
     PersistentLayout persistent;
     WorkspacePlan workspace;

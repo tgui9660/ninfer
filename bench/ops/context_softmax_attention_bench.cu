@@ -37,8 +37,8 @@ constexpr std::int32_t kKvHeads    = 8;
 constexpr float kScale             = 0.08838834764831844055F;
 constexpr ops::AttentionHeadGeometry kGeometry{kHeadDim, kQueryHeads, kKvHeads};
 constexpr std::size_t kFlushBytes   = std::size_t{256} << 20;
-constexpr double kDenseBf16TcTflops = 209.5;
-constexpr double kRtx5090DramGBs    = 1792.0;
+constexpr double kRtxPro5000DenseBf16TcTflops = 174.4;
+constexpr double kRtxPro5000DramGBs    = 1344.0;
 
 enum class Execution : std::uint8_t { Eager, Graph, Both };
 enum class CacheMode : std::uint8_t { Cold, Warm, Both };
@@ -301,8 +301,8 @@ void report(const Result& result) {
                 "(%5.1f%% of %.0f) math=%7.2f TFLOP/s (%5.1f%% of %.1f)\n",
                 execution_name(result.execution), cache_name(result.cache), result.tokens,
                 result.context, result.workspace_bytes, result.timing.median_us,
-                result.timing.min_us, result.timing.p95_us, gbps, gbps / kRtx5090DramGBs * 100.0,
-                kRtx5090DramGBs, tflops, tflops / kDenseBf16TcTflops * 100.0, kDenseBf16TcTflops);
+                result.timing.min_us, result.timing.p95_us, gbps, gbps / kRtxPro5000DramGBs * 100.0,
+                kRtxPro5000DramGBs, tflops, tflops / kRtxPro5000DenseBf16TcTflops * 100.0, kRtxPro5000DenseBf16TcTflops);
 }
 
 void write_csv(const Options& options, const std::vector<Result>& results) {

@@ -3,6 +3,7 @@
 #include "core/device.h"
 #include "core/nvtx.h"
 #include "core/startup.h"
+#include "core/tuning_profile.h"
 #include "runtime/contract/sampling.h"
 #include "runtime/contract/request.h"
 #include "runtime/engine/causal_score_core.h"
@@ -23,6 +24,9 @@ namespace {
 DeviceContext initialize_device(const EngineOptions& options) {
     StartupPhaseScope phase(options.startup_observer, StartupPhase::CudaInitialize);
     DeviceContext device(options.device);
+    const TuningResolution tuning = resolve_tuning_profile(
+        options.tuning_profile, device.compute_capability(), device.multiprocessor_count());
+    device.apply_tuning_resolution(tuning.concrete, tuning.tuning_sm_count, tuning.foreign);
     phase.complete();
     return device;
 }
@@ -378,6 +382,14 @@ MemorySummary Engine::memory_summary() const {
             }
         },
         impl_->core);
+}
+
+TuningSummary Engine::tuning_summary() const {
+    if (impl_ == nullptr) { throw std::logic_error("Engine is moved from"); }
+    return {.requested       = impl_->options.tuning_profile,
+            .resolved        = impl_->device.tuning_profile(),
+            .tuning_sm_count = impl_->device.tuning_sm_count(),
+            .foreign         = impl_->device.tuning_foreign()};
 }
 
 MediaCacheSummary Engine::media_cache_summary() const {

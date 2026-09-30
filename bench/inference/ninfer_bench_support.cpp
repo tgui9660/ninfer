@@ -1,3 +1,4 @@
+#include "core/tuning_profile.h"
 #include "ninfer_bench_support.h"
 #include "product/speculative_options.h"
 
@@ -304,6 +305,8 @@ std::string usage_text(std::string_view program) {
         << "  --lm-head-draft             use the optimized proposal head; requires a speculative "
            "backend\n"
         << "  --device <id>               CUDA device ordinal (default: 0)\n"
+        << "  --tuning-profile <auto|rtx-5090|rtx-pro-5000>\n"
+        << "                              launch-policy tuning set (default: auto)\n"
         << "  --no-cuda-graph             use eager decode\n"
         << "  --profile-measured          bracket one measured repetition with CUDA profiler API\n"
         << "  -o, --output <table|json|csv>  output format (default: table)\n"
@@ -361,6 +364,13 @@ BenchOptions parse_args(int argc, char** argv) {
             options.speculative.proposal_head = ProposalHead::Optimized;
         } else if (arg == "--device") {
             options.device = parse_nonnegative(value("--device"), "device");
+        } else if (arg == "--tuning-profile") {
+            const auto parsed = parse_tuning_profile(value("--tuning-profile"));
+            if (!parsed) {
+                throw std::invalid_argument(
+                    "--tuning-profile must be auto, rtx-5090, or rtx-pro-5000");
+            }
+            options.tuning_profile = *parsed;
         } else if (arg == "--no-cuda-graph") {
             options.use_cuda_graph = false;
         } else if (arg == "--profile-measured") {
@@ -596,6 +606,7 @@ std::string format_table(const BenchEnvironment& env, const std::vector<TestResu
         << "  corpus:     " << env.corpus_path << " (" << env.corpus_tokens << " tokens)\n"
         << "  config:     max_context=" << env.max_context << " prefill_chunk=" << env.prefill_chunk
         << " kv_cache=" << kv_cache_name(env.kv_cache)
+        << " tuning_profile=" << env.tuning_profile
         << " spec=" << product::speculative_backend_name(env.speculative.backend)
         << " draft_tokens=" << env.speculative.draft_tokens
         << " proposal_head=" << proposal_head_name(env.speculative.proposal_head)
@@ -713,6 +724,7 @@ std::string format_json(const BenchEnvironment& env, const std::string& command,
         << "    \"max_context\": " << env.max_context << ",\n"
         << "    \"prefill_chunk\": " << env.prefill_chunk << ",\n"
         << "    \"kv_cache\": \"" << kv_cache_name(env.kv_cache) << "\",\n"
+        << "    \"tuning_profile\": \"" << json_escape(env.tuning_profile) << "\",\n"
         << "    \"speculative_backend\": \""
         << product::speculative_backend_name(env.speculative.backend) << "\",\n"
         << "    \"draft_tokens\": " << env.speculative.draft_tokens << ",\n"

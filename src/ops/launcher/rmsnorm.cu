@@ -11,19 +11,25 @@
 namespace ninfer::ops::detail {
 namespace {
 
-// Past this many blocks the gated epilogue gives up its hoisted loads. Below one block per SM the
-// prefetch is the only source of overlap and those kernels run at 0.83x to 0.96x; above it a
-// second resident block already supplies that overlap and only the register cost is left (35 -> 50
-// on the warp kernel), which measures 1.02x to 1.14x. Swept over grid size on both gated shapes
-// the crossing sits between 176 and 192 blocks; this is the 170 SMs of this part, a literal
-// because nothing in the tree queries the device, so it is not portable.
-constexpr std::int64_t kRmsPrefetchBlocks = 170;
-
 template <RmsEpilogue Epilogue>
 void launch_rmsnorm(const Tensor& x, const Tensor& weight, const Tensor* z, Tensor& out,
                     std::int32_t d, std::int64_t rows, float eps, bool aligned2,
-                    cudaStream_t stream) {
-    const auto* x_bf16 = static_cast<const __nv_bfloat16*>(x.data);
+                    DeviceExecutionView execution) {
+    // Past one block per SM the gated epilogue gives up its hoisted loads. Below that the
+    // prefetch is the only source of overlap and those kernels run at 0.83x to 0.96x; above it a
+    // second resident block already supplies that overlap and only the register cost is left
+    // (35 -> 50 on the warp kernel), which measures 1.02x to 1.14x. Swept over grid size on both
+    // gated shapes on the 170-SM part the crossing sits between 176 and 192 blocks, so the gate
+    // uses the profile's wave-sizing SM count (170 rtx-5090). On the 110-SM part the no-prefetch
+    // variant never overtook the prefetch variant across 81..12000 blocks (loses below ~200, ties
+    // at 12000; evidence profiles/bench/phase3-rmsnorm-prefetch.txt), so the pro-5000 policy
+    // keeps the hoisted loads at every grid size.
+    const std::int64_t sm_blocks =
+        execution.tuning_profile == GpuTuningProfile::RtxPro5000
+            ? std::numeric_limits<std::int64_t>::max()
+            : execution.tuning_sm_count;
+    const cudaStream_t stream    = execution.stream;
+    const auto* x_bf16           = static_cast<const __nv_bfloat16*>(x.data);
     const auto* w_bf16 = static_cast<const __nv_bfloat16*>(weight.data);
     const auto* z_bf16 = z != nullptr ? static_cast<const __nv_bfloat16*>(z->data) : nullptr;
     auto* out_bf16     = static_cast<__nv_bfloat16*>(out.data);
@@ -74,7 +80,7 @@ void launch_rmsnorm(const Tensor& x, const Tensor& weight, const Tensor* z, Tens
         constexpr int kWarpsPerBlock = kBlock / kWarpSize;
         const auto blocks = static_cast<unsigned int>((rows + kWarpsPerBlock - 1) / kWarpsPerBlock);
         if constexpr (kGateOnGrid) {
-            if (blocks > kRmsPrefetchBlocks) {
+            if (blocks > sm_blocks) {
                 rmsnorm_warp_bf16x2_kernel<Epilogue, kBlock, false><<<blocks, kBlock, 0, stream>>>(
                     reinterpret_cast<const __nv_bfloat162*>(x_bf16),
                     reinterpret_cast<const __nv_bfloat162*>(w_bf16),
@@ -107,7 +113,7 @@ void launch_rmsnorm(const Tensor& x, const Tensor& weight, const Tensor* z, Tens
                 reinterpret_cast<__nv_bfloat162*>(out_bf16), d, rows, eps);
     } else if (aligned2 && d > 3072 && d <= 8192 && d % 1024 == 0) {
         if constexpr (kGateOnGrid) {
-            if (rows > kRmsPrefetchBlocks) {
+            if (rows > sm_blocks) {
                 rmsnorm_cta_bf16x2_kernel<Epilogue, 512, 8, false>
                     <<<static_cast<unsigned int>(rows), 512, 0, stream>>>(
                         reinterpret_cast<const __nv_bfloat162*>(x_bf16),
@@ -132,7 +138,7 @@ void launch_rmsnorm(const Tensor& x, const Tensor& weight, const Tensor* z, Tens
 } // namespace
 
 void rmsnorm_launch(const Tensor& x, const Tensor& weight, float eps, bool unit_offset,
-                    const Tensor* z, Tensor& out, cudaStream_t stream) {
+                    const Tensor* z, Tensor& out, DeviceExecutionView execution) {
     const std::int32_t d = x.ne[0];
     if (d <= 0) { throw std::invalid_argument("rmsnorm: ne[0] must be positive"); }
     const std::int64_t rows = out.numel() / d;
@@ -148,12 +154,13 @@ void rmsnorm_launch(const Tensor& x, const Tensor& weight, float eps, bool unit_
         ((x_addr | w_addr | z_addr | o_addr) & (alignof(__nv_bfloat162) - 1)) == 0;
 
     if (z != nullptr) {
-        launch_rmsnorm<RmsEpilogue::Gated>(x, weight, z, out, d, rows, eps, aligned2, stream);
+        launch_rmsnorm<RmsEpilogue::Gated>(x, weight, z, out, d, rows, eps, aligned2, execution);
     } else if (unit_offset) {
         launch_rmsnorm<RmsEpilogue::Offset>(x, weight, nullptr, out, d, rows, eps, aligned2,
-                                            stream);
+                                            execution);
     } else {
-        launch_rmsnorm<RmsEpilogue::Plain>(x, weight, nullptr, out, d, rows, eps, aligned2, stream);
+        launch_rmsnorm<RmsEpilogue::Plain>(x, weight, nullptr, out, d, rows, eps, aligned2,
+                                           execution);
     }
     CUDA_CHECK(cudaGetLastError());
 }

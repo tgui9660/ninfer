@@ -50,7 +50,7 @@ int run_case(const char* label, std::int32_t rows, std::int32_t columns, std::ui
 
     Tensor bias_tensor(device_bias.data(), DType::BF16, {rows});
     Tensor input_tensor(device_input.data(), DType::BF16, {rows, columns});
-    ops::add_bias(bias_tensor, input_tensor, nullptr);
+    ops::add_bias(bias_tensor, input_tensor, DeviceExecutionView{});
     cuda_synchronize();
 
     int failures = verify_pointwise(label, from_device_bf16(device_input.data(), count), expected,

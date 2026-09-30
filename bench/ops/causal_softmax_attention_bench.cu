@@ -10,6 +10,7 @@
 #include "core/device.h"
 #include "core/paged_kv_cache.h"
 #include "core/paged_kv_storage.h"
+#include "core/tuning_profile.h"
 #include "ninfer_bench_common.h"
 
 #include <cuda_profiler_api.h>
@@ -74,6 +75,7 @@ struct Options {
     int repeat       = 30;
     bool profile     = false;
     std::string csv_out;
+    GpuTuningProfile tuning_profile = GpuTuningProfile::Auto;
 };
 
 struct Result {
@@ -116,7 +118,8 @@ struct Result {
                  "[--envelope-max N] "
                  "[--execution eager|graph|both] [--cache cold|warm|both] "
                  "[--mapping identity|fragmented] "
-                 "[--warmup N] [--repeat N] [--graph-calls N] [--profile] [--csv-out PATH]\n",
+                 "[--warmup N] [--repeat N] [--graph-calls N] [--profile] [--csv-out PATH] "
+                 "[--tuning-profile auto|rtx-5090|rtx-pro-5000]\n",
                  message);
     std::exit(2);
 }
@@ -252,6 +255,11 @@ Options parse_options(int argc, char** argv) {
             options.profile = true;
         } else if (argument == "--csv-out") {
             options.csv_out = next("--csv-out requires a path");
+        } else if (argument == "--tuning-profile") {
+            const std::string_view value(next("--tuning-profile requires a value"));
+            const auto parsed = parse_tuning_profile(value);
+            if (!parsed) { usage("--tuning-profile expects auto, rtx-5090, or rtx-pro-5000"); }
+            options.tuning_profile = *parsed;
         } else if (argument == "--help" || argument == "-h") {
             usage("help");
         } else {
@@ -379,12 +387,48 @@ PagedKVBatchLayerView make_batch_cache_view(DeviceBuffer& k, DeviceBuffer& v, De
     return result;
 }
 
+// The production small-T split budget is profile-gated; resolve the wave-sizing SM count once so
+// the benchmark queries and launches with the engine's policy on this device. main() sets the
+// requested profile (--tuning-profile) before any measurement; the static caches read it on first
+// use.
+GpuTuningProfile requested_tuning_profile = GpuTuningProfile::Auto;
+
+struct TuningCache {
+    GpuTuningProfile profile;
+    std::int32_t sm_count;
+    TuningCache() {
+        int compute_capability   = 0;
+        int multiprocessor_count = 0;
+        cudaDeviceProp prop{};
+        if (cudaGetDeviceProperties(&prop, 0) == cudaSuccess) {
+            compute_capability   = prop.major * 10 + prop.minor;
+            multiprocessor_count = prop.multiProcessorCount;
+        }
+        const auto tuning = resolve_tuning_profile(requested_tuning_profile, compute_capability,
+                                                   multiprocessor_count);
+        profile           = tuning.concrete;
+        sm_count          = tuning.tuning_sm_count;
+    }
+};
+
+DeviceExecutionView bench_execution(cudaStream_t stream) {
+    static const TuningCache tuning;
+    return {.stream          = stream,
+            .tuning_profile  = tuning.profile,
+            .tuning_sm_count = tuning.sm_count};
+}
+
+std::int32_t bench_tuning_sm_count() {
+    static const TuningCache tuning;
+    return tuning.sm_count;
+}
+
 std::size_t workspace_capacity(const Geometry& geometry, KvCacheStorage storage,
                                std::int32_t tokens, std::int32_t batch,
                                ops::CausalAttentionExecutionEnvelope envelope) {
     return ops::causal_softmax_attention_workspace_capacity_bytes(
         {kHeadDim, geometry.query_heads, geometry.kv_heads}, storage, envelope, batch, tokens,
-        tokens);
+        tokens, bench_tuning_sm_count());
 }
 
 std::int32_t profile_visible(std::span<const std::int32_t> contexts,
@@ -514,16 +558,17 @@ public:
     }
 
     void launch(Entry entry, cudaStream_t stream) {
+        const DeviceExecutionView execution = bench_execution(stream);
         if (entry == Entry::Append) {
             const Tensor validity = masked_ ? valid_columns_tensor_ : Tensor{};
             ops::causal_softmax_attention(
                 q_tensor_, k_tensor_, v_tensor_, positions_tensor_, validity, table_rows_tensor_,
                 {kHeadDim, q_tensor_.ne[1], k_tensor_.ne[1]}, kScale, batch_cache_view_, envelope_,
-                workspace_, output_tensor_, stream);
+                workspace_, output_tensor_, execution);
         } else {
             ops::causal_softmax_attention_cached(
                 q_tensor_, positions_tensor_, {kHeadDim, q_tensor_.ne[1], cache_view_.num_kv_heads},
-                kScale, cache_view_, envelope_, workspace_, output_tensor_, stream);
+                kScale, cache_view_, envelope_, workspace_, output_tensor_, execution);
         }
     }
 
@@ -857,6 +902,10 @@ int main(int argc, char** argv) {
             return 0;
         }
         const Options options = parse_options(argc, argv);
+        requested_tuning_profile = options.tuning_profile;
+        const TuningCache tuning;
+        std::printf("tuning_profile=%s wave_sm_count=%d\n", tuning_profile_name(tuning.profile),
+                    tuning.sm_count);
         cudaStream_t stream   = nullptr;
         CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
         bench::L2FlushBuffer flush(kFlushBytes);

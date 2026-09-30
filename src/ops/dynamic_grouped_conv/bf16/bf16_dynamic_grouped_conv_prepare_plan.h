@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/device.h"
 #include "core/weight.h"
 #include "core/arena.h"
 #include "core/tensor.h"
@@ -20,6 +21,7 @@ void bf16_dynamic_grouped_conv_prepare_dispatch(const Tensor& residual, const Te
                                                 float eps, const Tensor& base_kernel,
                                                 const Weight& kernel_projection_weight,
                                                 Tensor& prepared, Tensor& finish_delta,
-                                                WorkspaceArena& workspace, cudaStream_t stream);
+                                                WorkspaceArena& workspace,
+                                                DeviceExecutionView execution);
 
 } // namespace ninfer::ops::detail

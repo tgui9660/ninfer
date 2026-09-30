@@ -14,6 +14,8 @@
 #include "core/device.h"
 #include "direct_bf16_weight.cuh"
 #include "ninfer_bench_common.h"
+#include "ops/linear/fp8/fp8_dispatch.h"
+#include "ops/linear/q4/q4_launch.h"
 #include "quantized_weight.cuh"
 
 #include <cuda_bf16.h>
@@ -40,18 +42,21 @@ using ninfer::ops::LinearPolicy;
 
 namespace {
 
-constexpr double kRtx5090DramGBs          = 1792.0;
-constexpr double kRtx5090SustainedReadGBs = 1674.5;
-// NVIDIA's GB202 table reports dense/sparse pairs at boost clock. Keep input and accumulator
-// precision explicit for the qualified Tensor Core routes below.
-constexpr double kRtx5090Fp8Fp16AccumulateTFLOPs = 838.0;
-constexpr double kRtx5090Fp8Fp32AccumulateTFLOPs = 419.0;
-// Unit-scale block-scaled FP8 uses the full-rate FP32 accumulation path on RTX 5090.
-constexpr double kRtx5090MxFp8Fp32AccumulateTFLOPs = 838.0;
-constexpr double kRtx5090Bf16Fp32AccumulateTFLOPs  = 209.5;
-constexpr std::uint64_t kDefaultFlushBytes         = 256ULL << 20;
-constexpr int kDefaultWarmup                       = 3;
-constexpr int kDefaultRepeat                       = 20;
+constexpr double kRtxPro5000DramGBs          = 1344.0;
+constexpr double kRtxPro5000SustainedReadGBs = 1237.4;
+// Dense TC peaks are 1024 FLOP/SM/cycle (fp8 fp32-acc) at the 3090 MHz boost clock on 110 SMs;
+// the 300 W cap sustains ~2220 MHz (~250/125 TFLOP/s), so these ratios are against the boost
+// table, as on the historical RTX 5090 (419/209.5). Keep input and accumulator precision
+// explicit for the qualified Tensor Core routes below.
+constexpr double kRtxPro5000Fp8Fp16AccumulateTFLOPs   = 697.6;
+constexpr double kRtxPro5000Fp8Fp32AccumulateTFLOPs   = 348.8;
+// Unit-scale block-scaled FP8 uses the full-rate FP32 accumulation path on RTX PRO 5000, as on
+// the historical RTX 5090.
+constexpr double kRtxPro5000MxFp8Fp32AccumulateTFLOPs = 348.8;
+constexpr double kRtxPro5000Bf16Fp32AccumulateTFLOPs  = 174.4;
+constexpr std::uint64_t kDefaultFlushBytes            = 256ULL << 20;
+constexpr int kDefaultWarmup                          = 3;
+constexpr int kDefaultRepeat                          = 20;
 
 enum class TClass : std::uint8_t {
     Continuous,
@@ -124,6 +129,7 @@ struct Options {
     int repeat                = kDefaultRepeat;
     std::uint64_t flush_bytes = kDefaultFlushBytes;
     std::string csv_out;
+    std::string route;
 };
 
 struct BenchPoint {
@@ -327,6 +333,8 @@ void usage(const char* argv0) {
                  "  --execution MODE   eager (default) or graph; time the complete Op.\n"
                  "  --graph-calls N    Calls per timed graph (1..64, default 1); report per call.\n"
                  "  --profile          Capture exactly one post-warmup public Linear call.\n"
+                 "  --route NAME       Force one candidate launch route (bypasses dispatch);\n"
+                 "                     sweep it across the token grid for measured re-tuning.\n"
                  "  --warmup N         Warmup calls per point (default %d).\n"
                  "  --repeat N         Measured cold-cache samples per point (default %d).\n"
                  "  --flush-mib N      L2 eviction buffer size (default 256 MiB).\n"
@@ -381,6 +389,8 @@ Options parse_args(int argc, char** argv) {
                 checked_mul(parse_u64(next("flush-mib"), "flush-mib"), 1ULL << 20, "flush bytes");
         } else if (arg == "--csv-out") {
             opt.csv_out = next("csv output path");
+        } else if (arg == "--route") {
+            opt.route = next("route");
         } else if (arg == "--help" || arg == "-h") {
             usage(argv[0]);
             std::exit(0);
@@ -420,6 +430,9 @@ Options parse_args(int argc, char** argv) {
     }
     if (opt.profile && !opt.csv_out.empty()) {
         throw std::invalid_argument("--profile does not write timing CSV");
+    }
+    if (!opt.route.empty() && opt.have_suite) {
+        throw std::invalid_argument("--route cannot be combined with --suite");
     }
     return opt;
 }
@@ -529,6 +542,22 @@ LinearBenchWeight make_weight(QType qtype, std::int32_t n, std::int32_t k) {
     return {std::move(packed.storage), packed.weight, model_bytes};
 }
 
+// Candidate routes for measured re-tuning of the per-shape dispatch ladders. Q4 launchers are
+// single-translation-unit functions; the pointer type matches Q4Launch.
+using ForcedLaunch = void (*)(const Tensor&, const Weight&, Tensor&, cudaStream_t);
+
+ForcedLaunch forced_route(QType qtype, std::int32_t n, std::int32_t k, const std::string& name) {
+    using namespace ninfer::ops::detail;
+    if (qtype == QType::Q4_G64_FP16 && n == 131072 && k == 5120) {
+        if (name == "sliced_r32_t32_w4_s1") return launch_q4_a16_sliced_r32_t32_w4_s1;
+        if (name == "sliced_r32_t16_w4_s1") return launch_q4_a16_sliced_r32_t16_w4_s1;
+        if (name == "mma_r64_t48") return launch_q4_a16_mma_r64_t48;
+        if (name == "mma_r64_t64_k128_s2_a1") return launch_q4_a16_mma_r64_t64_k128_s2_a1;
+        if (name == "mma_r64_t80") return launch_q4_a16_mma_r64_t80;
+    }
+    return nullptr;
+}
+
 void fill_activation(DeviceBuffer& buffer, std::uint64_t elements, cudaStream_t stream) {
     CUDA_CHECK(bench::fixture::fill_values(static_cast<__nv_bfloat16*>(buffer.p), elements, 101U,
                                            -0.5F, 0.5F, stream));
@@ -551,7 +580,7 @@ double registered_tensor_peak_tflops(const BenchPoint& point, const char*& profi
          (point.n == 5120 && (point.k == 6144 || point.k == 17408))) &&
         point.t > 1 && (point.policy == LinearPolicy::A16Only || point.t <= 16)) {
         profile = "BF16_F32ACC";
-        return kRtx5090Bf16Fp32AccumulateTFLOPs;
+        return kRtxPro5000Bf16Fp32AccumulateTFLOPs;
     }
     const bool fp8_problem =
         (point.n == 14336 && point.k == 5120) || (point.n == 16384 && point.k == 5120) ||
@@ -565,12 +594,12 @@ double registered_tensor_peak_tflops(const BenchPoint& point, const char*& profi
     if (point.qtype == QType::FP8_E4M3FN_ROW_BF16 && point.policy == LinearPolicy::AllowA8 &&
         fp8_problem && fp8_tensor_route) {
         profile = "MXFP8_F32ACC";
-        return kRtx5090MxFp8Fp32AccumulateTFLOPs;
+        return kRtxPro5000MxFp8Fp32AccumulateTFLOPs;
     }
     if (point.qtype == QType::BF16 && point.policy == LinearPolicy::A16Only && point.n == 256 &&
         point.k == 5120) {
         profile = "BF16_F32ACC";
-        return kRtx5090Bf16Fp32AccumulateTFLOPs;
+        return kRtxPro5000Bf16Fp32AccumulateTFLOPs;
     }
     profile = "";
     return std::numeric_limits<double>::quiet_NaN();
@@ -590,7 +619,7 @@ Result make_result(const BenchPoint& point, const LinearBenchWeight& weight,
                                 static_cast<double>(point.t);
     const double seconds = timing.median_us * 1.0e-6;
     const double memory_floor_us =
-        static_cast<double>(model_bytes) / (kRtx5090DramGBs * 1.0e9) * 1.0e6;
+        static_cast<double>(model_bytes) / (kRtxPro5000DramGBs * 1.0e9) * 1.0e6;
 
     Result result;
     result.labels             = join_labels(point.labels);
@@ -608,8 +637,8 @@ Result make_result(const BenchPoint& point, const LinearBenchWeight& weight,
     result.min_us             = timing.min_us;
     result.p95_us             = timing.p95_us;
     result.effective_gbs      = static_cast<double>(model_bytes) / seconds / 1.0e9;
-    result.dram_spec_pct      = result.effective_gbs / kRtx5090DramGBs * 100.0;
-    result.sustained_read_pct = result.effective_gbs / kRtx5090SustainedReadGBs * 100.0;
+    result.dram_spec_pct      = result.effective_gbs / kRtxPro5000DramGBs * 100.0;
+    result.sustained_read_pct = result.effective_gbs / kRtxPro5000SustainedReadGBs * 100.0;
     result.useful_tflops      = useful_flops / seconds / 1.0e12;
     result.tensor_peak_tflops = registered_tensor_peak_tflops(point, result.tensor_profile);
     if (std::isfinite(result.tensor_peak_tflops)) {
@@ -652,6 +681,13 @@ std::vector<Result> run_group(const PointGroup& group, const Options& opt,
     CUDA_CHECK(cudaMemsetAsync(out.p, 0, out.bytes, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
+    ForcedLaunch forced = nullptr;
+    if (!opt.route.empty()) {
+        forced = forced_route(group.qtype, group.n, group.k, opt.route);
+        if (forced == nullptr)
+            throw std::invalid_argument("unknown --route for this shape: " + opt.route);
+    }
+
     std::vector<Result> results;
     results.reserve(group.points.size());
     double t1_median       = std::numeric_limits<double>::quiet_NaN();
@@ -661,7 +697,12 @@ std::vector<Result> run_group(const PointGroup& group, const Options& opt,
         Tensor activation(x.p, DType::BF16, {group.k, point.t});
         Tensor output(out.p, DType::BF16, {group.n, point.t});
         const auto launch = [&](cudaStream_t launch_stream) {
-            ops::linear(activation, weight.weight, output, group.policy, workspace, launch_stream);
+            if (forced != nullptr) {
+                forced(activation, weight.weight, output, launch_stream);
+            } else {
+                ops::linear(activation, weight.weight, output, group.policy, workspace,
+                            launch_stream);
+            }
         };
         bench::TimedGraph graph;
         if (opt.graph)
@@ -708,10 +749,21 @@ void run_profile(const BenchPoint& point, const Options& opt, bench::L2FlushBuff
     CUDA_CHECK(cudaMemsetAsync(out.p, 0, out.bytes, stream));
     CUDA_CHECK(cudaStreamSynchronize(stream));
 
+    ForcedLaunch forced = nullptr;
+    if (!opt.route.empty()) {
+        forced = forced_route(point.qtype, point.n, point.k, opt.route);
+        if (forced == nullptr)
+            throw std::invalid_argument("unknown --route for this shape: " + opt.route);
+    }
+
     Tensor activation(x.p, DType::BF16, {point.k, point.t});
     Tensor output(out.p, DType::BF16, {point.n, point.t});
     const auto body = [&](cudaStream_t launch_stream) {
-        ops::linear(activation, weight.weight, output, point.policy, workspace, launch_stream);
+        if (forced != nullptr) {
+            forced(activation, weight.weight, output, launch_stream);
+        } else {
+            ops::linear(activation, weight.weight, output, point.policy, workspace, launch_stream);
+        }
     };
     bench::TimedGraph graph;
     if (opt.graph) graph.capture(stream, body);
@@ -722,6 +774,7 @@ void run_profile(const BenchPoint& point, const Options& opt, bench::L2FlushBuff
             body(stream);
     };
     std::printf("# execution=%s graph_nodes=%zu\n", opt.graph ? "graph" : "eager", graph.nodes());
+    if (!opt.route.empty()) { std::printf("# forced_route=%s\n", opt.route.c_str()); }
     for (int i = 0; i < opt.warmup; ++i) {
         bench::flush_l2(flush, stream);
         launch();
@@ -751,19 +804,20 @@ void run_profile(const BenchPoint& point, const Options& opt, bench::L2FlushBuff
 void print_header(const Options& opt) {
     std::printf("# execution=%s graph_calls=%d cuda_runtime=%d\n", opt.graph ? "graph" : "eager",
                 opt.graph_calls, CUDART_VERSION);
+    if (!opt.route.empty()) { std::printf("# forced_route=%s\n", opt.route.c_str()); }
     int device = 0;
     CUDA_CHECK(cudaGetDevice(&device));
     cudaDeviceProp properties{};
     CUDA_CHECK(cudaGetDeviceProperties(&properties, device));
-    std::printf("# actual_gpu=%s sm=%d%d reference_gpu=RTX_5090\n", properties.name,
+    std::printf("# actual_gpu=%s sm=%d%d reference_gpu=RTX_PRO_5000\n", properties.name,
                 properties.major, properties.minor);
-    std::printf("# dram_spec_gbs=%.1f sustained_read_gbs=%.1f cache=%s\n", kRtx5090DramGBs,
-                kRtx5090SustainedReadGBs,
+    std::printf("# dram_spec_gbs=%.1f sustained_read_gbs=%.1f cache=%s\n", kRtxPro5000DramGBs,
+                kRtxPro5000SustainedReadGBs,
                 opt.graph_calls == 1 ? "cold" : "cold-before-graph-bundle");
     std::printf("# dense_fp8_tensor_tflops fp16_acc=%.1f fp32_acc=%.1f mxfp8_fp32_acc=%.1f\n",
-                kRtx5090Fp8Fp16AccumulateTFLOPs, kRtx5090Fp8Fp32AccumulateTFLOPs,
-                kRtx5090MxFp8Fp32AccumulateTFLOPs);
-    std::printf("# dense_bf16_tensor_tflops fp32_acc=%.1f\n", kRtx5090Bf16Fp32AccumulateTFLOPs);
+                kRtxPro5000Fp8Fp16AccumulateTFLOPs, kRtxPro5000Fp8Fp32AccumulateTFLOPs,
+                kRtxPro5000MxFp8Fp32AccumulateTFLOPs);
+    std::printf("# dense_bf16_tensor_tflops fp32_acc=%.1f\n", kRtxPro5000Bf16Fp32AccumulateTFLOPs);
 }
 
 void print_results(const std::vector<Result>& results) {
@@ -828,8 +882,8 @@ void write_csv(const std::filesystem::path& path, const std::vector<Result>& res
             << ',' << result.n << ',' << result.k << ',' << result.t << ',' << result.weight_bytes
             << ',' << result.x_bytes << ',' << result.out_bytes << ',' << result.model_bytes << ','
             << result.useful_flops << ',' << result.median_us << ',' << result.min_us << ','
-            << result.p95_us << ',' << result.effective_gbs << ',' << kRtx5090DramGBs << ','
-            << result.dram_spec_pct << ',' << kRtx5090SustainedReadGBs << ','
+            << result.p95_us << ',' << result.effective_gbs << ',' << kRtxPro5000DramGBs << ','
+            << result.dram_spec_pct << ',' << kRtxPro5000SustainedReadGBs << ','
             << result.sustained_read_pct << ',' << result.useful_tflops << ','
             << result.tensor_profile << ',';
         if (std::isfinite(result.tensor_peak_tflops)) { out << result.tensor_peak_tflops; }
