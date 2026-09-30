@@ -9,7 +9,8 @@ constexpr int kGroupedPrefillMaxWidth = 192;
 } // namespace
 
 Nvfp4KvCausalPlan make_nvfp4_kv_causal_plan(int heads, int width, int batch,
-                                            CausalAttentionExecutionEnvelope envelope) {
+                                            CausalAttentionExecutionEnvelope envelope,
+                                            int sm_count) {
     if ((heads != 24 && heads != 16) || width < 1 || batch < 1 || batch > 8 ||
         (batch > 1 && width > 16) || envelope.min_visible_keys == 0 ||
         envelope.min_visible_keys > envelope.max_visible_keys ||
@@ -26,7 +27,7 @@ Nvfp4KvCausalPlan make_nvfp4_kv_causal_plan(int heads, int width, int batch,
                                       ? (width + 1) / 2
                                       : std::min(width, grouped_limit);
     const int row_tiles         = (query_tile * (heads == 24 ? 6 : 8) + 15) / 16;
-    constexpr int sms           = kCausalAttentionSmCount;
+    const int sms               = sm_count;
     const int wave_ctas         = (sms / independent_tiles) * independent_tiles;
     const int budget            = row_tiles <= 2 || wave_ctas < sms * 9 / 10 ? 2 * sms : sms;
     CausalKvPartition partition{
@@ -38,10 +39,10 @@ Nvfp4KvCausalPlan make_nvfp4_kv_causal_plan(int heads, int width, int batch,
 }
 
 std::size_t nvfp4_kv_workspace_bytes(int heads, int batch, int min_width, int max_width,
-                                     CausalAttentionExecutionEnvelope envelope) {
+                                     CausalAttentionExecutionEnvelope envelope, int sm_count) {
     std::size_t maximum = 0;
     for (int width = min_width; width <= std::min(max_width, kGroupedPrefillMaxWidth); ++width) {
-        const auto plan = make_nvfp4_kv_causal_plan(heads, width, batch, envelope);
+        const auto plan = make_nvfp4_kv_causal_plan(heads, width, batch, envelope, sm_count);
         if (plan.family == Nvfp4KvFamily::Tiled) continue;
         const int splits = plan.partition.capacity;
         WorkspaceLayoutBuilder layout;

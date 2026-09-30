@@ -281,19 +281,18 @@ std::size_t causal_softmax_attention_workspace_capacity_bytes(
     }
 
     if (cache_storage == KvCacheStorage::BFloat16)
-        return detail::bf16_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope);
+        return detail::bf16_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope, tuning_sm_count);
 
     if (cache_storage == KvCacheStorage::Fp8E4M3Row256)
-        return detail::fp8_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope);
+        return detail::fp8_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope, tuning_sm_count);
 
     if (cache_storage == KvCacheStorage::Int8Group64)
-        return detail::int8_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope);
+        return detail::int8_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope, tuning_sm_count);
 
     if (cache_storage == KvCacheStorage::Nvfp4Group16)
-        return detail::nvfp4_kv_workspace_bytes(q_heads, batch_size, min_width, max_width,
-                                                envelope);
+        return detail::nvfp4_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope, tuning_sm_count);
 
-    return detail::k8v4_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope);
+    return detail::k8v4_kv_workspace_bytes(q_heads, batch_size, min_width, max_width, envelope, tuning_sm_count);
 }
 
 void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
@@ -323,30 +322,30 @@ void causal_softmax_attention(const Tensor& q, const Tensor& k, const Tensor& v,
 
     if (cache.storage == KvCacheStorage::BFloat16) {
         detail::bf16_kv_append_attention(q, k, v, positions, valid_columns, kv_table_rows, scale,
-                                         cache, envelope, workspace, out, stream);
+                                         cache, envelope, workspace, out, execution.tuning_sm_count, stream);
         return;
     }
 
     if (cache.storage == KvCacheStorage::Fp8E4M3Row256) {
         detail::fp8_kv_append_attention(q, k, v, positions, valid_columns, kv_table_rows, scale,
-                                        cache, envelope, workspace, out, stream);
+                                        cache, envelope, workspace, out, execution.tuning_sm_count, stream);
         return;
     }
 
     if (cache.storage == KvCacheStorage::Int8Group64) {
         detail::int8_kv_append_attention(q, k, v, positions, valid_columns, kv_table_rows, scale,
-                                         cache, envelope, workspace, out, stream);
+                                         cache, envelope, workspace, out, execution.tuning_sm_count, stream);
         return;
     }
 
     if (cache.storage == KvCacheStorage::Nvfp4Group16) {
         detail::nvfp4_kv_append_attention(q, k, v, positions, valid_columns, kv_table_rows, scale,
-                                          cache, envelope, workspace, out, stream);
+                                          cache, envelope, workspace, out, execution.tuning_sm_count, stream);
         return;
     }
 
     detail::k8v4_kv_append_attention(q, k, v, positions, valid_columns, kv_table_rows, scale, cache,
-                                     envelope, workspace, out, stream);
+                                     envelope, workspace, out, execution.tuning_sm_count, stream);
 }
 
 void causal_softmax_attention_cached(const Tensor& q, const Tensor& positions,
@@ -364,30 +363,26 @@ void causal_softmax_attention_cached(const Tensor& q, const Tensor& positions,
     validate_attention_tensors(q, positions, out, geometry, cache, envelope, scale, op);
 
     if (cache.storage == KvCacheStorage::BFloat16) {
-        detail::bf16_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out,
-                                         stream);
+        detail::bf16_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out, execution.tuning_sm_count, stream);
         return;
     }
 
     if (cache.storage == KvCacheStorage::Fp8E4M3Row256) {
-        detail::fp8_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out,
-                                        stream);
+        detail::fp8_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out, execution.tuning_sm_count, stream);
         return;
     }
 
     if (cache.storage == KvCacheStorage::Int8Group64) {
-        detail::int8_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out,
-                                         stream);
+        detail::int8_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out, execution.tuning_sm_count, stream);
         return;
     }
 
     if (cache.storage == KvCacheStorage::Nvfp4Group16) {
-        detail::nvfp4_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out,
-                                          stream);
+        detail::nvfp4_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out, execution.tuning_sm_count, stream);
         return;
     }
 
-    detail::k8v4_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out, stream);
+    detail::k8v4_kv_cached_attention(q, positions, scale, cache, envelope, workspace, out, execution.tuning_sm_count, stream);
 }
 
 } // namespace ninfer::ops

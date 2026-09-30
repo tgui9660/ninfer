@@ -2563,22 +2563,23 @@ int run_k8v4_cases() {
 
 int verify_workspace_capacity_contract(KvCacheStorage storage) {
     int failures = 0;
-    constexpr ops::CausalAttentionExecutionEnvelope envelope{1, 1025};
-    constexpr ops::AttentionHeadGeometry geometry{kHeadDim, 16, 2};
-    const std::size_t interval = ops::causal_softmax_attention_workspace_capacity_bytes(
-        geometry, storage, envelope, 1, 1, 17, kTestTuningSmCount);
-    std::size_t witness = 0;
-    for (std::int32_t tokens = 1; tokens <= 17; ++tokens) {
-        witness = std::max(witness, ops::causal_softmax_attention_workspace_capacity_bytes(
-                                        geometry, storage, envelope, 1, tokens, tokens,
-                                        kTestTuningSmCount));
-    }
-    if (interval != witness) {
-        std::cerr << "causal_softmax_attention interval capacity has no exact route witness\n";
-        ++failures;
-    }
+    for (const std::int32_t sm_count : {kRtx5090SmCount, kRtxPro5000SmCount}) {
+        constexpr ops::CausalAttentionExecutionEnvelope envelope{1, 1025};
+        constexpr ops::AttentionHeadGeometry geometry{kHeadDim, 16, 2};
+        const std::size_t interval = ops::causal_softmax_attention_workspace_capacity_bytes(
+            geometry, storage, envelope, 1, 1, 17, sm_count);
+        std::size_t witness = 0;
+        for (std::int32_t tokens = 1; tokens <= 17; ++tokens) {
+            witness = std::max(witness, ops::causal_softmax_attention_workspace_capacity_bytes(
+                                            geometry, storage, envelope, 1, tokens, tokens,
+                                            sm_count));
+        }
+        if (interval != witness) {
+            std::cerr << "causal_softmax_attention interval capacity has no exact route witness"
+                         " for tuning SM count\n";
+            ++failures;
+        }
 
-    {
         // Prefill split counts can decrease as query width grows. The interval
         // query must still cover every supported point, including before a drop.
         for (const auto& item : kGeometries) {
@@ -2588,9 +2589,9 @@ int verify_workspace_capacity_contract(KvCacheStorage storage) {
                 largest = std::max(
                     largest, ops::causal_softmax_attention_workspace_capacity_bytes(
                                  op_geometry(item), storage, prefill_envelope, 1, width, width,
-                                 kTestTuningSmCount));
+                                 sm_count));
             const auto capacity = ops::causal_softmax_attention_workspace_capacity_bytes(
-                op_geometry(item), storage, prefill_envelope, 1, 17, 1025, kTestTuningSmCount);
+                op_geometry(item), storage, prefill_envelope, 1, 17, 1025, sm_count);
             if (capacity != largest) {
                 std::cerr << "causal_softmax_attention prefill interval capacity mismatch\n";
                 ++failures;

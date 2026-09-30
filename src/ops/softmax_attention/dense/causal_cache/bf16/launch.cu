@@ -85,8 +85,8 @@ void bf16_kv_append_attention(const Tensor& q, const Tensor& k, const Tensor& v,
                               const Tensor& positions, const Tensor& valid_columns,
                               const Tensor& table_rows, float scale, PagedKVBatchLayerView cache,
                               CausalAttentionExecutionEnvelope envelope, WorkspaceArena& workspace,
-                              Tensor& out, cudaStream_t stream) {
-    const auto plan = make_bf16_kv_causal_plan(q.ne[1], q.ne[2], q.ne[3], envelope);
+                              Tensor& out, int sm_count, cudaStream_t stream) {
+    const auto plan = make_bf16_kv_causal_plan(q.ne[1], q.ne[2], q.ne[3], envelope, sm_count);
     if (!plan.grouped()) {
         kv_cache_append_batch_launch(k, v, positions, valid_columns, table_rows, cache, stream);
         tiled(make_causal_operands(q, positions, out, scale, envelope.max_visible_keys),
@@ -103,8 +103,8 @@ void bf16_kv_append_attention(const Tensor& q, const Tensor& k, const Tensor& v,
 void bf16_kv_cached_attention(const Tensor& q, const Tensor& positions, float scale,
                               const PagedKVLayerView& cache,
                               CausalAttentionExecutionEnvelope envelope, WorkspaceArena& workspace,
-                              Tensor& out, cudaStream_t stream) {
-    const auto plan = make_bf16_kv_causal_plan(q.ne[1], q.ne[2], 1, envelope);
+                              Tensor& out, int sm_count, cudaStream_t stream) {
+    const auto plan = make_bf16_kv_causal_plan(q.ne[1], q.ne[2], 1, envelope, sm_count);
     const auto view = single_row_paged_kv_batch_view(cache);
     if (!plan.grouped()) {
         tiled(make_causal_operands(q, positions, out, scale, envelope.max_visible_keys),
